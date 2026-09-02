@@ -1,0 +1,9 @@
+apiVersion: borgbase.clevyr.com/v1
+kind: Repository
+metadata:
+  labels:
+    app.kubernetes.io/name: borgbase-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: repository-sample
+spec:
+  # TODO(user): Add fields here
