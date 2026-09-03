@@ -18,6 +18,9 @@ import (
 var (
 	// managerImage is the manager image to be built and loaded for testing.
 	managerImage = "example.com/borgbase-operator:v0.0.1"
+	// stubImage stands in for the BorgBase API, so the Repository controller
+	// can be exercised without real credentials.
+	stubImage = "example.com/borgbase-stub:v0.0.1"
 	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
 	shouldCleanupCertManager = false
 )
@@ -43,6 +46,15 @@ var _ = BeforeSuite(func() {
 	By("loading the manager image on Kind")
 	err = utils.LoadImageToKindClusterWithName(managerImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
+
+	By("building the BorgBase stub image")
+	cmd = exec.Command("docker", "build", "-f", "test/e2e/stub/Dockerfile", "-t", stubImage, ".")
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the BorgBase stub image")
+
+	By("loading the BorgBase stub image on Kind")
+	err = utils.LoadImageToKindClusterWithName(stubImage)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the stub image into Kind")
 
 	configureKubectlKubeRC()
 	setupCertManager()

@@ -1,0 +1,68 @@
+# A stand-in for the BorgBase API, so the e2e tests can exercise the Repository
+# controller without real credentials. --borgbase-endpoint points the operator
+# here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: borgbase-stub
+  namespace: borgbase-operator-system
+  labels:
+    app.kubernetes.io/name: borgbase-stub
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: borgbase-stub
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: borgbase-stub
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: stub
+          image: example.com/borgbase-stub:v0.0.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: borgbase-stub
+  namespace: borgbase-operator-system
+spec:
+  selector:
+    app.kubernetes.io/name: borgbase-stub
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# The token the operator reads by default. Its value is never checked by the
+# stub; what matters is that the lookup succeeds.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: borgbase-api
+  namespace: borgbase-operator-system
+stringData:
+  token: stub-token

@@ -4,6 +4,7 @@
 package e2e
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -57,6 +58,25 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+		By("deploying the BorgBase stub and its API token")
+		cmd = exec.Command("kubectl", "apply", "-f", "test/e2e/borgbase-stub.yaml")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the BorgBase stub")
+
+		By("pointing the operator at the stub")
+		cmd = exec.Command("kubectl", "patch", "deployment", "borgbase-operator-controller-manager",
+			"-n", namespace, "--type=json", "-p",
+			`[{"op":"add","path":"/spec/template/spec/containers/0/args/-",`+
+				`"value":"--borgbase-endpoint=http://borgbase-stub.`+namespace+`.svc:8080/graphql"}]`)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to point the operator at the stub")
+
+		By("waiting for the controller-manager to roll out")
+		cmd = exec.Command("kubectl", "rollout", "status",
+			"deployment/borgbase-operator-controller-manager", "-n", namespace, "--timeout=3m")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "controller-manager did not roll out")
 	})
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
@@ -311,6 +331,154 @@ spec:
 			cronjobs, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cronjobs).To(BeEmpty(), "a backup was scheduled against a missing repository")
+		})
+
+		// The Repository controller is the half of this operator that talks to
+		// an external service, so nothing else in the suite covers it. Against
+		// the stub it can be driven end to end: created in BorgBase, recorded
+		// in status, credentials written, and an init Job started.
+		It("should create a repository and write its credentials", func() {
+			const (
+				testNS = "borgbase-e2e-repo"
+				name   = "restic"
+			)
+
+			By("creating a test namespace")
+			cmd := exec.Command("kubectl", "create", "ns", testNS)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create the test namespace")
+			DeferCleanup(func() {
+				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found"))
+			})
+
+			By("applying a Repository")
+			manifest := fmt.Sprintf(`apiVersion: borgbase.clevyr.com/v1
+kind: Repository
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  region: us
+  quotaGiB: 100
+`, name, testNS)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(manifest)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply the Repository")
+
+			By("waiting for the repository to be recorded in status")
+			var repositoryID string
+			verifyRecorded := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "repository", name, "-n", testNS,
+					"-o", "jsonpath={.status.repositoryID}")
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).NotTo(BeEmpty(), "no repository ID was recorded")
+				repositoryID = strings.TrimSpace(out)
+			}
+			Eventually(verifyRecorded, 2*time.Minute).Should(Succeed())
+
+			By("checking the credentials Secret")
+			// Written as Data, so both keys must be readable back out; the
+			// password is the only copy of the encryption key.
+			cmd = exec.Command("kubectl", "get", "secret", name+"-borgbase", "-n", testNS,
+				"-o", "jsonpath={.data.RESTIC_PASSWORD}")
+			password, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "no credentials Secret was written")
+			Expect(password).NotTo(BeEmpty(), "the Secret holds no password")
+
+			cmd = exec.Command("kubectl", "get", "secret", name+"-borgbase", "-n", testNS,
+				"-o", "jsonpath={.data.RESTIC_REPOSITORY}")
+			encoded, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			url, err := base64.StdEncoding.DecodeString(encoded)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(url)).To(ContainSubstring(repositoryID + ".repo.borgbase.com"))
+
+			By("checking the Secret is not owned under the default Retain policy")
+			cmd = exec.Command("kubectl", "get", "secret", name+"-borgbase", "-n", testNS,
+				"-o", "jsonpath={.metadata.ownerReferences}")
+			owners, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(owners).To(BeEmpty(),
+				"Retain must not own the Secret; it is the only copy of the encryption key")
+
+			By("waiting for the init Job to be created")
+			// It will not succeed, since the stub serves no restic repository.
+			// That the operator got this far is the point.
+			verifyInitJob := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "job", name+"-init", "-n", testNS,
+					"-o", "jsonpath={.metadata.name}")
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).To(Equal(name + "-init"))
+			}
+			Eventually(verifyInitJob, 2*time.Minute).Should(Succeed())
+
+			By("checking the repository reports itself as initializing")
+			verifyInitializing := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "repository", name, "-n", testNS,
+					"-o", "jsonpath={.status.conditions[?(@.type=='Initialized')].reason}")
+				reason, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(reason).To(Or(Equal("Initializing"), Equal("InitFailed")))
+			}
+			Eventually(verifyInitializing, 2*time.Minute).Should(Succeed())
+		})
+
+		// A wrong ID must fail loudly rather than quietly provisioning an empty
+		// repository beside the real backups.
+		It("should refuse to adopt a repository that does not exist", func() {
+			const (
+				testNS = "borgbase-e2e-adopt"
+				name   = "restic"
+			)
+
+			By("creating a test namespace")
+			cmd := exec.Command("kubectl", "create", "ns", testNS)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create the test namespace")
+			DeferCleanup(func() {
+				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found"))
+			})
+
+			By("adopting an ID the stub has never heard of")
+			manifest := fmt.Sprintf(`apiVersion: borgbase.clevyr.com/v1
+kind: Repository
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  existingRepositoryID: deadbeef
+  passwordSecretRef:
+    name: restic-envs
+    key: RESTIC_PASSWORD
+`, name, testNS)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(manifest)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply the Repository")
+
+			By("waiting for it to report the failure")
+			verifyFailed := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "repository", name, "-n", testNS,
+					"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
+				status, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(status).To(Equal("False"))
+			}
+			Eventually(verifyFailed, 2*time.Minute).Should(Succeed())
+
+			By("verifying no repository was created and no Secret written")
+			cmd = exec.Command("kubectl", "get", "repository", name, "-n", testNS,
+				"-o", "jsonpath={.status.repositoryID}")
+			id, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(id).To(BeEmpty(), "a repository was provisioned for a bad adoption ID")
+
+			cmd = exec.Command("kubectl", "get", "secret", name+"-borgbase", "-n", testNS)
+			_, err = utils.Run(cmd)
+			Expect(err).To(HaveOccurred(), "credentials were written for a repository that does not exist")
 		})
 
 		// Status used to be written with a full Update, which carries the
