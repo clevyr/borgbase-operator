@@ -6,18 +6,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
-	transportspdy "k8s.io/client-go/transport/spdy"
-	"k8s.io/streaming/pkg/httpstream/spdy"
 )
-
-const defaultPingPeriod = 5 * time.Second
 
 // ErrNoRESTConfig means no usable client config was found.
 var ErrNoRESTConfig = errors.New("no REST client config")
@@ -56,36 +51,7 @@ func Exec(ctx context.Context, cfg *rest.Config, cs kubernetes.Interface, opts E
 			TTY:       opts.TTY,
 		}, scheme.ParameterCodec)
 
-	tlsConfig, err := rest.TLSConfigFor(cfg)
-	if err != nil {
-		return err
-	}
-
-	proxy := http.ProxyFromEnvironment
-	if cfg.Proxy != nil {
-		proxy = cfg.Proxy
-	}
-
-	roundTripper, err := spdy.NewRoundTripperWithConfig(spdy.RoundTripperConfig{
-		TLS:        tlsConfig,
-		Proxier:    proxy,
-		PingPeriod: defaultPingPeriod,
-	})
-	if err != nil {
-		return err
-	}
-
-	wrapper, err := rest.HTTPWrappersForConfig(cfg, roundTripper)
-	if err != nil {
-		return err
-	}
-
-	executor, err := remotecommand.NewSPDYExecutorForTransports(
-		wrapper,
-		transportspdy.NewUpgraderForStreaming(roundTripper),
-		http.MethodPost,
-		req.URL(),
-	)
+	executor, err := remotecommand.NewSPDYExecutor(cfg, http.MethodPost, req.URL())
 	if err != nil {
 		return err
 	}
