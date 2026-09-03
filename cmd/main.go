@@ -39,10 +39,18 @@ var (
 	setupLog = ctrl.Log.WithName("setup")
 )
 
-// parseNamespacedName parses a "namespace/name" flag value.
-func parseNamespacedName(s string) (types.NamespacedName, error) {
+// parseNamespacedName parses a "namespace/name" value, falling back to
+// defaultNS for a bare name.
+func parseNamespacedName(s, defaultNS string) (types.NamespacedName, error) {
 	ns, name, ok := strings.Cut(s, "/")
-	if !ok || ns == "" || name == "" {
+	if !ok {
+		if defaultNS == "" {
+			return types.NamespacedName{}, fmt.Errorf(
+				"%q has no namespace and POD_NAMESPACE is unset; use namespace/name", s)
+		}
+		return types.NamespacedName{Namespace: defaultNS, Name: s}, nil
+	}
+	if ns == "" || name == "" {
 		return types.NamespacedName{}, fmt.Errorf("expected namespace/name, got %q", s)
 	}
 	return types.NamespacedName{Namespace: ns, Name: name}, nil
@@ -90,8 +98,9 @@ func main() {
 	opts := zap.Options{
 		Development: true,
 	}
-	flag.StringVar(&apiTokenSecret, "api-token-secret", "borgbase-system/borgbase-api",
-		"Namespaced name of the Secret holding the default BorgBase API token. "+
+	flag.StringVar(&apiTokenSecret, "api-token-secret", "borgbase-api",
+		"Secret holding the default BorgBase API token, as \"name\" or "+
+			"\"namespace/name\". A bare name resolves in the operator's own namespace. "+
 			"A Repository may override this with spec.apiTokenSecretRef.")
 	flag.StringVar(&borgbaseEndpoint, "borgbase-endpoint", "",
 		"Override the BorgBase GraphQL endpoint. Empty uses the public API.")
@@ -202,7 +211,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	tokenSecret, err := parseNamespacedName(apiTokenSecret)
+	tokenSecret, err := parseNamespacedName(apiTokenSecret, os.Getenv("POD_NAMESPACE"))
 	if err != nil {
 		setupLog.Error(err, "Invalid --api-token-secret")
 		os.Exit(1)
