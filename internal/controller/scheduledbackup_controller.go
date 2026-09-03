@@ -230,7 +230,7 @@ func (r *ScheduledBackupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&borgbasev1.ScheduledBackup{}).
+		For(&borgbasev1.ScheduledBackup{}, builder.WithPredicates(ignoreOwnStatusWrites())).
 		Owns(&batchv1.CronJob{}).
 		Watches(
 			&borgbasev1.Repository{},

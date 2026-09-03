@@ -19,6 +19,7 @@ import (
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -66,6 +67,11 @@ type RepositoryReconciler struct {
 
 	// BackupImage runs the init Job. It must provide restic.
 	BackupImage string
+
+	// APIReader reads straight from the API server, bypassing the informer
+	// cache. It is used only where a stale read would cause visible duplicate
+	// work; everything else goes through the cached client.
+	APIReader client.Reader
 
 	// Endpoint overrides the BorgBase GraphQL endpoint. Empty uses the public
 	// API; it exists so the operator can be pointed at a stub in tests.
@@ -403,9 +409,20 @@ func (r *RepositoryReconciler) reconcileInitJob(
 		if job.Status.Succeeded > 0 {
 			// Deliberately not deleted here; cleanupInitJob removes it on a
 			// later pass, once Initialized has reached the cache.
+			//
+			// Whether to report this is decided against the API server rather
+			// than the cache: the Job watch fires more than once as the Job
+			// settles, and those reconciles read a cache that has not caught up
+			// with our own status write, so they would report success again.
+			recorded, err := r.initializationRecorded(ctx, repo)
+			if err != nil {
+				return 0, err
+			}
 			repo.Status.Initialized = true
-			r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "Initialized", "Initialize",
-				"restic init completed successfully")
+			if !recorded {
+				r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "Initialized", "Initialize",
+					"restic init completed successfully")
+			}
 			return 0, nil
 		}
 		if failedAt := jobFailedAt(&job); failedAt != nil {
@@ -506,6 +523,23 @@ func (r *RepositoryReconciler) deleteJob(ctx context.Context, job *batchv1.Job) 
 		return fmt.Errorf("deleting init job %s: %w", job.Name, err)
 	}
 	return nil
+}
+
+// initializationRecorded reports whether Initialized is already true on the
+// stored object, reading past the informer cache.
+func (r *RepositoryReconciler) initializationRecorded(
+	ctx context.Context, repo *borgbasev1.Repository,
+) (bool, error) {
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	var live borgbasev1.Repository
+	key := types.NamespacedName{Namespace: repo.Namespace, Name: repo.Name}
+	if err := reader.Get(ctx, key, &live); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	return live.Status.Initialized, nil
 }
 
 // cleanupInitJob removes the init Job once initialization has been recorded.
@@ -639,8 +673,11 @@ func (r *RepositoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Recorder == nil {
 		r.Recorder = mgr.GetEventRecorder("repository-controller")
 	}
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
+	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&borgbasev1.Repository{}).
+		For(&borgbasev1.Repository{}, builder.WithPredicates(ignoreOwnStatusWrites())).
 		// Secrets are deliberately not owned or watched: doing so would build
 		// an informer over every Secret in the cluster. A credentials Secret
 		// deleted out from under us is recreated on the next periodic
