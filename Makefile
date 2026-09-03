@@ -139,11 +139,23 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	- $(CONTAINER_TOOL) buildx rm borgbase-operator-builder
 	rm Dockerfile.cross
 
+# render-config builds config/default with the manager image set to $(IMG).
+#
+# `kustomize edit set image` rewrites config/manager/kustomization.yaml in
+# place, so running build-installer or deploy used to leave the working tree
+# dirty with whatever tag was last built. Do the edit on a throwaway copy
+# instead; the tracked file never changes.
+define render-config
+	tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
+	cp -R config "$$tmp/config" && \
+	(cd "$$tmp/config/manager" && "$(KUSTOMIZE)" edit set image controller=$(IMG)) && \
+	"$(KUSTOMIZE)" build "$$tmp/config/default"
+endef
+
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p dist
-	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
-	"$(KUSTOMIZE)" build config/default > dist/install.yaml
+	$(render-config) > dist/install.yaml
 
 ##@ Deployment
 
@@ -163,8 +175,7 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
-	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" apply -f -
+	$(render-config) | "$(KUBECTL)" apply -f -
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
