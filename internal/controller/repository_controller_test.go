@@ -28,6 +28,9 @@ const (
 	seedSecret = "restic-envs"
 	tokenNS    = "borgbase-system"
 	tokenName  = "borgbase-api"
+
+	// adoptedRepoID is the BorgBase ID used wherever a test adopts a repo.
+	adoptedRepoID = "a1b2c3d4"
 )
 
 func testScheme(t *testing.T) *runtime.Scheme {
@@ -127,11 +130,11 @@ func TestPasswordIsGeneratedOnceAndNeverRotated(t *testing.T) {
 // nothing, and the real backups would stop being written to.
 func TestAdoptionNeverCreates(t *testing.T) {
 	api := newFakeAPI(&borgbase.Repo{
-		ID: "a1b2c3d4", Name: testNS, Format: borgbase.FormatRestic,
+		ID: adoptedRepoID, Name: testNS, Format: borgbase.FormatRestic,
 		Htpasswd: "secret-token", CurrentUsage: 3.2,
 	})
 	repo := repositoryFixture(func(r *borgbasev1.Repository) {
-		r.Spec.ExistingRepositoryID = "a1b2c3d4"
+		r.Spec.ExistingRepositoryID = adoptedRepoID
 		r.Spec.PasswordSecretRef = &corev1.SecretKeySelector{
 			Name: seedSecret,
 			Key:  KeyResticPassword,
@@ -153,7 +156,7 @@ func TestAdoptionNeverCreates(t *testing.T) {
 	if got := string(secret.Data[KeyResticPassword]); got != "existing-password-from-sops" {
 		t.Errorf("adopted password = %q, want the seeded one", got)
 	}
-	want := "rest:https://a1b2c3d4:secret-token@a1b2c3d4.repo.borgbase.com"
+	want := "rest:https://" + adoptedRepoID + ":secret-token@" + adoptedRepoID + ".repo.borgbase.com"
 	if got := string(secret.Data[KeyResticRepository]); got != want {
 		t.Errorf("RESTIC_REPOSITORY = %q, want %q", got, want)
 	}
@@ -329,7 +332,7 @@ func TestDeletionPolicyRetainKeepsRepositoryAndSecret(t *testing.T) {
 	}
 	// The Secret holds the only copy of the encryption key, so it must not be
 	// garbage collected with the resource.
-	if _, err := getSecretOrErr(c, "restic-borgbase"); err != nil {
+	if err := getSecretErr(c, "restic-borgbase"); err != nil {
 		t.Errorf("credentials secret was removed under the Retain policy: %v", err)
 	}
 	if err := c.Get(context.Background(), key, &repo); !apierrors.IsNotFound(err) {
@@ -377,10 +380,11 @@ func TestSuspendSkipsReconcile(t *testing.T) {
 	}
 }
 
-func getSecretOrErr(c client.Client, name string) (*corev1.Secret, error) {
-	var s corev1.Secret
-	err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: name}, &s)
-	return &s, err
+// getSecretErr returns the error from fetching a Secret, for tests that care
+// only whether it is there.
+func getSecretErr(c client.Client, name string) error {
+	return c.Get(context.Background(),
+		types.NamespacedName{Namespace: testNS, Name: name}, &corev1.Secret{})
 }
 
 // Retain never calls BorgBase, so a missing or rotated API token must not be
@@ -490,7 +494,7 @@ func TestNeverInventsPasswordOnceProvisioned(t *testing.T) {
 		ctrl.Request{Namespace: testNS, Name: resticName}); err == nil {
 		t.Fatal("expected an error rather than a newly invented password")
 	}
-	if _, err := getSecretOrErr(c, "restic-borgbase"); !apierrors.IsNotFound(err) {
+	if err := getSecretErr(c, "restic-borgbase"); !apierrors.IsNotFound(err) {
 		after := getSecret(t, c, "restic-borgbase")
 		t.Errorf("a replacement Secret was written with password %q, want none",
 			string(after.Data[KeyResticPassword]))
@@ -501,10 +505,10 @@ func TestNeverInventsPasswordOnceProvisioned(t *testing.T) {
 // right, and guessing would orphan whichever set of snapshots lost.
 func TestRejectsIDMismatchBetweenSpecAndStatus(t *testing.T) {
 	api := newFakeAPI(&borgbase.Repo{
-		ID: "a1b2c3d4", Name: testNS, Format: borgbase.FormatRestic, Htpasswd: "t",
+		ID: adoptedRepoID, Name: testNS, Format: borgbase.FormatRestic, Htpasswd: "t",
 	})
 	repo := repositoryFixture(func(r *borgbasev1.Repository) {
-		r.Spec.ExistingRepositoryID = "a1b2c3d4"
+		r.Spec.ExistingRepositoryID = adoptedRepoID
 		r.Spec.PasswordSecretRef = &corev1.SecretKeySelector{Name: seedSecret, Key: KeyResticPassword}
 		r.Status.RepositoryID = "zzzzzzzz"
 	})

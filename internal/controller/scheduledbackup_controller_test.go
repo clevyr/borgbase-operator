@@ -27,6 +27,9 @@ import (
 const (
 	cronJobName = resticName + "-backup"
 	testRepoID  = "abc12345"
+
+	// newBackupName is the newcomer in the slug-conflict tests.
+	newBackupName = "restic-new"
 )
 
 func backupHarness(t *testing.T, objs ...client.Object) (*ScheduledBackupReconciler, client.Client) {
@@ -235,7 +238,7 @@ func TestSlugConflictBlocksTheNewerBackup(t *testing.T) {
 	incumbent.Spec.Healthchecks = &borgbasev1.HealthchecksSpec{PingKeySecretRef: pingKey}
 
 	newcomer := scheduledBackup()
-	newcomer.Name = "restic-new"
+	newcomer.Name = newBackupName
 	newcomer.CreationTimestamp = metav1.NewTime(time.Now())
 	newcomer.Spec.Healthchecks = &borgbasev1.HealthchecksSpec{PingKeySecretRef: pingKey}
 
@@ -245,13 +248,13 @@ func TestSlugConflictBlocksTheNewerBackup(t *testing.T) {
 	}
 
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: testNS, Name: "restic-new"},
+		Namespace: testNS, Name: newBackupName,
 	}); err != nil {
 		t.Fatalf("reconciling the newcomer: %v", err)
 	}
 	var got borgbasev1.ScheduledBackup
 	if err := c.Get(context.Background(),
-		types.NamespacedName{Namespace: testNS, Name: "restic-new"}, &got); err != nil {
+		types.NamespacedName{Namespace: testNS, Name: newBackupName}, &got); err != nil {
 		t.Fatal(err)
 	}
 	cond := apimeta.FindStatusCondition(got.Status.Conditions, borgbasev1.ScheduledBackupConditionReady)
@@ -259,14 +262,14 @@ func TestSlugConflictBlocksTheNewerBackup(t *testing.T) {
 		t.Fatalf("newcomer Ready = %+v, want reason SlugConflict", cond)
 	}
 	if err := c.Get(context.Background(),
-		types.NamespacedName{Namespace: testNS, Name: "restic-new-backup"},
+		types.NamespacedName{Namespace: testNS, Name: newBackupName + "-backup"},
 		&batchv1.CronJob{}); !apierrors.IsNotFound(err) {
 		t.Error("the conflicting backup was scheduled anyway")
 	}
 
 	// The incumbent is unaffected.
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: testNS, Name: "restic-old"},
+		Namespace: testNS, Name: "restic-old",
 	}); err != nil {
 		t.Fatalf("reconciling the incumbent: %v", err)
 	}
@@ -298,7 +301,7 @@ func TestDistinctSlugsCoexist(t *testing.T) {
 
 	for _, name := range []string{"restic-files", "restic-db"} {
 		if _, err := r.Reconcile(context.Background(), ctrl.Request{
-			NamespacedName: types.NamespacedName{Namespace: testNS, Name: name},
+			Namespace: testNS, Name: name,
 		}); err != nil {
 			t.Fatalf("reconciling %s: %v", name, err)
 		}
@@ -367,7 +370,7 @@ func TestUnmanagedCronJobIsReported(t *testing.T) {
 
 	r.Client = &createConflictClient{Client: r.Client}
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: testNS, Name: resticName},
+		Namespace: testNS, Name: resticName,
 	})
 	if err == nil || !strings.Contains(err.Error(), "not managed by this operator") {
 		t.Errorf("error = %v, want it to name the unmanaged CronJob", err)
@@ -392,7 +395,7 @@ func (c *createConflictClient) Get(
 func reconcileBackup(t *testing.T, r *ScheduledBackupReconciler) {
 	t.Helper()
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: testNS, Name: resticName},
+		Namespace: testNS, Name: resticName,
 	}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}

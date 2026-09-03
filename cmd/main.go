@@ -68,7 +68,6 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
-// nolint:gocyclo
 func main() {
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
@@ -100,8 +99,11 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	// Production defaults: JSON encoding at info level. Development mode logs
+	// at debug in console format and panics on DPanic, none of which belongs in
+	// a controller nobody is watching.
 	opts := zap.Options{
-		Development: true,
+		Development: false,
 	}
 	flag.StringVar(&apiTokenSecret, "api-token-secret", "borgbase-api",
 		"Secret holding the default BorgBase API token, as \"name\" or "+
@@ -200,6 +202,14 @@ func main() {
 		}),
 	}
 
+	// Resolved before the manager is built, so a bad flag fails immediately
+	// rather than after the process has connected and started caches.
+	tokenSecret, err := parseNamespacedName(apiTokenSecret, os.Getenv("POD_NAMESPACE"))
+	if err != nil {
+		setupLog.Error(err, "Invalid --api-token-secret")
+		os.Exit(1)
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:  scheme,
 		Metrics: metricsServerOptions,
@@ -245,12 +255,6 @@ func main() {
 	})
 	if err != nil {
 		setupLog.Error(err, "Failed to start manager")
-		os.Exit(1)
-	}
-
-	tokenSecret, err := parseNamespacedName(apiTokenSecret, os.Getenv("POD_NAMESPACE"))
-	if err != nil {
-		setupLog.Error(err, "Invalid --api-token-secret")
 		os.Exit(1)
 	}
 

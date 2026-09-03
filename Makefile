@@ -248,11 +248,16 @@ $(ENVTEST): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
-	@test -f .custom-gcl.yml && { \
-		echo "Building custom golangci-lint with plugins..." && \
-		$(GOLANGCI_LINT) custom --destination $(LOCALBIN) --name golangci-lint-custom && \
-		mv -f $(LOCALBIN)/golangci-lint-custom $(GOLANGCI_LINT); \
-	} || true
+	@# Build the plugin-enabled binary over the versioned file, not over the
+	@# symlink: replacing the symlink with a regular file makes go-install-tool's
+	@# freshness check fail every time, so this whole step, and the download
+	@# before it, would rerun on every `make lint`.
+	@test -f .custom-gcl.yml || exit 0; \
+	if ! "$(GOLANGCI_LINT)" custom --help >/dev/null 2>&1; then exit 0; fi; \
+	if "$(GOLANGCI_LINT)" version 2>/dev/null | grep -q custom; then exit 0; fi; \
+	echo "Building custom golangci-lint with plugins..."; \
+	"$(GOLANGCI_LINT)" custom --destination "$(LOCALBIN)" --name golangci-lint-custom && \
+	mv -f "$(LOCALBIN)/golangci-lint-custom" "$(GOLANGCI_LINT)-$(GOLANGCI_LINT_VERSION)"
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary

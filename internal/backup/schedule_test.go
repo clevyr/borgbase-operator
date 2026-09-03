@@ -7,6 +7,9 @@ import (
 	"testing"
 )
 
+// testKey stands in for a resource identity, "<namespace>/<name>".
+const testKey = "myapp-prod/restic"
+
 func TestResolveScheduleVerbatim(t *testing.T) {
 	// An explicit cron expression must survive migration unchanged, so that
 	// moving an app onto the operator does not move when it backs up.
@@ -69,13 +72,12 @@ func TestResolveScheduleRejectsUnevenSteps(t *testing.T) {
 }
 
 func TestJitterIsStableAndDistributed(t *testing.T) {
-	const key = "myapp-prod/restic"
-	first, err := ResolveSchedule("@hourly", key)
+	first, err := ResolveSchedule("@hourly", testKey)
 	if err != nil {
 		t.Fatalf("ResolveSchedule error = %v", err)
 	}
 	for range 100 {
-		again, err := ResolveSchedule("@hourly", key)
+		again, err := ResolveSchedule("@hourly", testKey)
 		if err != nil {
 			t.Fatalf("ResolveSchedule error = %v", err)
 		}
@@ -127,7 +129,7 @@ func TestJitterIsStableAndDistributed(t *testing.T) {
 // a day's worth of slots into sixty and gave one resource two different
 // schedules depending on how it spelled the same cadence.
 func TestEveryDayMatchesDaily(t *testing.T) {
-	for _, key := range []string{"myapp-prod/restic", "other-prod/restic", "third-staging/restic"} {
+	for _, key := range []string{testKey, "other-prod/restic", "third-staging/restic"} {
 		daily, err := ResolveSchedule("@daily", key)
 		if err != nil {
 			t.Fatalf("ResolveSchedule(@daily, %q) error = %v", key, err)
@@ -170,7 +172,7 @@ func TestEveryStepsArePhaseShifted(t *testing.T) {
 // The offset has to stay inside the step, or cron never reaches it: "20-59/15"
 // fires at 20, 35 and 50 but a "70-59/15" would fire never.
 func TestEveryOffsetStaysWithinTheStep(t *testing.T) {
-	for _, key := range []string{"a/x", "b/y", "c/z", "myapp-prod/restic", "zulu-staging/restic"} {
+	for _, key := range []string{"a/x", "b/y", "c/z", testKey, "zulu-staging/restic"} {
 		got, err := ResolveSchedule("@every 15m", key)
 		if err != nil {
 			t.Fatalf("ResolveSchedule error = %v", err)
@@ -185,7 +187,7 @@ func TestEveryOffsetStaysWithinTheStep(t *testing.T) {
 		}
 	}
 
-	for _, key := range []string{"a/x", "b/y", "c/z", "myapp-prod/restic"} {
+	for _, key := range []string{"a/x", "b/y", "c/z", testKey} {
 		got, err := ResolveSchedule("@every 6h", key)
 		if err != nil {
 			t.Fatalf("ResolveSchedule error = %v", err)
