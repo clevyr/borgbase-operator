@@ -39,7 +39,7 @@ func Render(spec *borgbasev1.ScheduledBackupSpec) (string, error) {
 	}
 
 	for _, src := range spec.Sources {
-		line, err := renderSource(src)
+		line, err := renderSource(src, retryLockFlag(spec))
 		if err != nil {
 			return "", err
 		}
@@ -47,7 +47,7 @@ func Render(spec *borgbasev1.ScheduledBackupSpec) (string, error) {
 		b.WriteString("\n")
 	}
 
-	if forget := renderForget(spec.Retention); forget != "" {
+	if forget := renderForget(spec.Retention, retryLockFlag(spec)); forget != "" {
 		b.WriteString(forget)
 		b.WriteString("\n")
 	}
@@ -57,15 +57,23 @@ func Render(spec *borgbasev1.ScheduledBackupSpec) (string, error) {
 	return b.String(), nil
 }
 
+// retryLockFlag renders the shared --retry-lock flag, or "" when disabled.
+func retryLockFlag(spec *borgbasev1.ScheduledBackupSpec) string {
+	if spec.RetryLock == nil || spec.RetryLock.Duration <= 0 {
+		return ""
+	}
+	return " --retry-lock=" + spec.RetryLock.Duration.String()
+}
+
 // renderSource renders one `restic backup` invocation.
-func renderSource(src borgbasev1.BackupSource) (string, error) {
+func renderSource(src borgbasev1.BackupSource, retryLock string) (string, error) {
 	tag := src.EffectiveTag()
 
 	switch src.Type {
 	case borgbasev1.SourceTypeFiles:
 		// Files are backed up in place, relative to the container's working
 		// directory, with excludes on continuation lines for readability.
-		line := fmt.Sprintf("restic backup --tag=%s %s", tag, src.EffectivePath())
+		line := fmt.Sprintf("restic backup%s --tag=%s %s", retryLock, tag, src.EffectivePath())
 		if len(src.Exclude) == 0 {
 			return line, nil
 		}
@@ -81,7 +89,8 @@ func renderSource(src borgbasev1.BackupSource) (string, error) {
 		// to disk first, so a dump never needs scratch space the size of the
 		// database.
 		var sb strings.Builder
-		fmt.Fprintf(&sb, "restic backup --tag=%s --stdin-from-command -- dumpdb %s", tag, src.Type)
+		fmt.Fprintf(&sb, "restic backup%s --tag=%s --stdin-from-command -- dumpdb %s",
+			retryLock, tag, src.Type)
 		if src.Database != "" {
 			sb.WriteString(" --database=" + src.Database)
 		}
@@ -99,7 +108,7 @@ func renderSource(src borgbasev1.BackupSource) (string, error) {
 }
 
 // renderForget renders the retention command, or "" when no retention is set.
-func renderForget(r *borgbasev1.Retention) string {
+func renderForget(r *borgbasev1.Retention, retryLock string) string {
 	if r == nil {
 		return ""
 	}
@@ -122,7 +131,7 @@ func renderForget(r *borgbasev1.Retention) string {
 	if len(flags) == 0 {
 		return ""
 	}
-	return "restic forget --prune " + strings.Join(flags, " ")
+	return "restic forget --prune" + retryLock + " " + strings.Join(flags, " ")
 }
 
 // shellQuote wraps s in single quotes so that glob patterns reach restic

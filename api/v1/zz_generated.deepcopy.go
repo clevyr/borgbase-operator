@@ -346,6 +346,11 @@ func (in *ScheduledBackupSpec) DeepCopyInto(out *ScheduledBackupSpec) {
 		*out = new(Retention)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.RetryLock != nil {
+		in, out := &in.RetryLock, &out.RetryLock
+		*out = new(metav1.Duration)
+		**out = **in
+	}
 	if in.Env != nil {
 		in, out := &in.Env, &out.Env
 		*out = make(map[string]string, len(*in))

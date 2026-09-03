@@ -301,6 +301,18 @@ type ScheduledBackupSpec struct {
 	// +optional
 	Retention *Retention `json:"retention,omitempty"`
 
+	// retryLock is how long restic waits for the repository lock before giving
+	// up. Pruning takes an exclusive lock, so without this a backup that
+	// overlaps a prune fails outright rather than waiting its turn. That
+	// happens whenever two schedules share a repository, which is exactly the
+	// state an app is in while it is being migrated onto this operator.
+	//
+	// Set it to 0 to pass no flag at all, restoring restic's default of
+	// failing immediately.
+	// +kubebuilder:default:="5m"
+	// +optional
+	RetryLock *metav1.Duration `json:"retryLock,omitempty"`
+
 	// env adds environment variables to the backup container. Intended as the
 	// companion to script; typed fields cover the common cases.
 	// +optional

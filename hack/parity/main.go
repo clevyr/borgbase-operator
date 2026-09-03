@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	borgbasev1 "github.com/clevyr/borgbase-operator/api/v1"
@@ -78,13 +79,22 @@ func originalScript(path string) (string, error) {
 	return string(out), nil
 }
 
-// normalize ignores differences that cannot change behaviour: trailing
-// whitespace, and the optional quoting around an --exclude pattern. Quoting a
-// bare pattern is a safety improvement, not a change in what it matches.
+// normalize ignores differences that cannot change what gets backed up:
+// trailing whitespace, the optional quoting around an --exclude pattern, and
+// the --retry-lock flag.
+//
+// Quoting a bare pattern is a safety improvement, not a change in what it
+// matches. --retry-lock only decides whether a command waits for the repository
+// lock or fails immediately; it selects no different data. Both are deliberate
+// improvements over the hand-written scripts, so comparing them verbatim would
+// report a difference on every app and hide the ones that matter.
+var retryLock = regexp.MustCompile(` --retry-lock=\S+`)
+
 func normalize(s string) string {
 	var lines []string
 	for line := range strings.SplitSeq(s, "\n") {
 		line = strings.TrimRight(line, " \t\\")
+		line = retryLock.ReplaceAllString(line, "")
 		// Only unquote exclude patterns; stripping a trailing quote from every
 		// line could hide a genuine difference elsewhere in the script.
 		if strings.Contains(line, "--exclude=") {
