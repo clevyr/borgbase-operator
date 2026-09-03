@@ -15,7 +15,7 @@ var ErrSopsUnavailable = errors.New("sops is required to read the encrypted repo
 
 type decryptedSecret struct {
 	StringData map[string]string `json:"stringData"`
-	Data       map[string]string `json:"data"`
+	Data       map[string][]byte `json:"data"`
 }
 
 // repositoryIDFromSecret recovers the BorgBase repository ID, which is recorded
@@ -52,7 +52,7 @@ func repositoryIDFromSecret(path string) (string, error) {
 
 	url := secret.StringData["RESTIC_REPOSITORY"]
 	if url == "" {
-		url = secret.Data["RESTIC_REPOSITORY"]
+		url = string(secret.Data["RESTIC_REPOSITORY"])
 	}
 	if url == "" {
 		return "", fmt.Errorf("%w: %s has no RESTIC_REPOSITORY", ErrNoRepositoryID, path)
