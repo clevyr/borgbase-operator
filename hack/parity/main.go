@@ -1,8 +1,9 @@
-// Command parity compares the backup script this operator would render against
-// the script in the hand-written HelmRelease it replaces.
+// Command parity compares what this operator would generate against the
+// hand-written HelmRelease it replaces.
 //
-// Migrating an app must not silently change what gets backed up, so run this
-// for each app before cutting it over and account for every difference.
+// Migrating an app must not silently change what gets backed up, nor when, so
+// run this for each app before cutting it over and account for every
+// difference.
 //
 // Usage:
 //
@@ -21,6 +22,17 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+// defaultTimeZone is the CRD's default, and therefore what an omitted
+// spec.timeZone resolves to.
+const defaultTimeZone = "America/Chicago"
+
+// plan is what a backup will do: the script, and when it runs.
+type plan struct {
+	script   string
+	schedule string
+	timeZone string
+}
+
 func main() {
 	if len(os.Args) != 3 {
 		fmt.Fprintln(os.Stderr, "usage: parity <generated.yaml> <helmrelease.yaml>")
@@ -32,28 +44,48 @@ func main() {
 		fmt.Fprintln(os.Stderr, "rendering generated resource:", err)
 		os.Exit(1)
 	}
-	original, err := originalScript(os.Args[2])
+	original, err := originalPlan(os.Args[2])
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "reading original script:", err)
+		fmt.Fprintln(os.Stderr, "reading original backup:", err)
 		os.Exit(1)
 	}
 
-	if normalize(rendered) == normalize(original) {
+	var differences []string
+	if normalize(rendered.script) != normalize(original.script) {
+		differences = append(differences, "SCRIPT DIFFERS")
+	}
+	// A schedule that shifts moves every backup and quietly changes what the
+	// retention tiers mean, so it is compared as carefully as the script.
+	if rendered.schedule != original.schedule {
+		differences = append(differences, fmt.Sprintf(
+			"SCHEDULE DIFFERS: original %q, generated %q", original.schedule, rendered.schedule))
+	}
+	if rendered.timeZone != original.timeZone {
+		differences = append(differences, fmt.Sprintf(
+			"TIMEZONE DIFFERS: original %q, generated %q", original.timeZone, rendered.timeZone))
+	}
+
+	if len(differences) == 0 {
 		fmt.Println("IDENTICAL")
 		return
 	}
 
-	fmt.Println("--- original")
-	fmt.Println(original)
-	fmt.Println("--- rendered")
-	fmt.Println(rendered)
+	for _, d := range differences {
+		fmt.Println(d)
+	}
+	if normalize(rendered.script) != normalize(original.script) {
+		fmt.Println("--- original")
+		fmt.Println(original.script)
+		fmt.Println("--- rendered")
+		fmt.Println(rendered.script)
+	}
 	os.Exit(1)
 }
 
-func renderGenerated(path string) (string, error) {
+func renderGenerated(path string) (plan, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		return plan{}, err
 	}
 	for doc := range strings.SplitSeq(string(raw), "\n---\n") {
 		if !strings.Contains(doc, "kind: ScheduledBackup") {
@@ -61,22 +93,56 @@ func renderGenerated(path string) (string, error) {
 		}
 		var sb borgbasev1.ScheduledBackup
 		if err := yaml.Unmarshal([]byte(doc), &sb); err != nil {
-			return "", err
+			return plan{}, err
 		}
-		return backup.Render(&sb.Spec)
+		script, err := backup.Render(&sb.Spec)
+		if err != nil {
+			return plan{}, err
+		}
+		// Resolved rather than taken verbatim, because a shorthand schedule is
+		// jittered and the comparison has to see what the CronJob will get.
+		schedule, err := backup.ResolveSchedule(sb.Spec.Schedule, sb.Namespace+"/"+sb.Name)
+		if err != nil {
+			return plan{}, err
+		}
+		tz := sb.Spec.TimeZone
+		if tz == "" {
+			tz = defaultTimeZone
+		}
+		return plan{script: script, schedule: schedule, timeZone: tz}, nil
 	}
-	return "", fmt.Errorf("no ScheduledBackup document in %s", path)
+	return plan{}, fmt.Errorf("no ScheduledBackup document in %s", path)
 }
 
-// originalScript pulls the shell body out of the HelmRelease's container
-// command, which is the last element of the runitor invocation.
-func originalScript(path string) (string, error) {
-	out, err := exec.Command("yq", "-r",
-		".spec.values.controllers.restic.containers.restic.command[-1]", path).Output()
+// originalPlan pulls the shell body, schedule and time zone out of the
+// HelmRelease. The script is the last element of the runitor invocation.
+func originalPlan(path string) (plan, error) {
+	script, err := yq(path, ".spec.values.controllers.restic.containers.restic.command[-1]")
 	if err != nil {
-		return "", fmt.Errorf("running yq: %w", err)
+		return plan{}, err
 	}
-	return string(out), nil
+	schedule, err := yq(path, ".spec.values.controllers.restic.cronjob.schedule")
+	if err != nil {
+		return plan{}, err
+	}
+	tz, err := yq(path, `.spec.values.controllers.restic.cronjob.timeZone // ""`)
+	if err != nil {
+		return plan{}, err
+	}
+	if tz == "" {
+		// An unset time zone in the HelmRelease means the cluster's, which for
+		// this fleet is what the CRD defaults to.
+		tz = defaultTimeZone
+	}
+	return plan{script: script, schedule: schedule, timeZone: tz}, nil
+}
+
+func yq(path, expr string) (string, error) {
+	out, err := exec.Command("yq", "-r", expr, path).Output()
+	if err != nil {
+		return "", fmt.Errorf("running yq %q: %w", expr, err)
+	}
+	return strings.TrimRight(string(out), "\n"), nil
 }
 
 // normalize ignores differences that cannot change what gets backed up:

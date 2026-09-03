@@ -40,6 +40,17 @@ const (
 	containerName = "restic"
 	cacheVolume   = "cache"
 	mariadbName   = "mariadb"
+
+	// tmpVolume backs a writable /tmp, which is what makes a read-only root
+	// filesystem workable: restic and the dump tools need scratch space, and
+	// without this they would fail on a filesystem they cannot write to.
+	tmpVolume    = "tmp"
+	tmpMountPath = "/tmp"
+
+	// fallbackCacheDir is where restic caches when there is no cache volume.
+	// Left to itself restic would use a directory under $HOME, which a
+	// read-only root filesystem does not allow.
+	fallbackCacheDir = tmpMountPath + "/restic-cache"
 )
 
 // Config carries operator-level settings into rendering.
@@ -152,17 +163,14 @@ func BuildCronJob(
 	volumes, mounts := buildVolumes(sb)
 
 	container := corev1.Container{
-		Name:         containerName,
-		Image:        image,
-		Command:      buildCommand(sb, cfg, script),
-		Env:          env,
-		EnvFrom:      []corev1.EnvFromSource{{SecretRef: &corev1.SecretEnvSource{Name: repo.SecretName()}}},
-		VolumeMounts: mounts,
-		Resources:    resources(sb),
-		SecurityContext: &corev1.SecurityContext{
-			AllowPrivilegeEscalation: ptr.To(false),
-			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-		},
+		Name:            containerName,
+		Image:           image,
+		Command:         buildCommand(sb, cfg, script),
+		Env:             env,
+		EnvFrom:         []corev1.EnvFromSource{{SecretRef: &corev1.SecretEnvSource{Name: repo.SecretName()}}},
+		VolumeMounts:    mounts,
+		Resources:       resources(sb),
+		SecurityContext: containerSecurityContext(sb),
 	}
 	if sb.Spec.Volume != nil {
 		// restic backs up paths relative to the working directory, so file
@@ -252,16 +260,30 @@ func podLabels(sb *borgbasev1.ScheduledBackup) map[string]string {
 
 // podSecurityContext returns the pod's security context.
 //
-// The default sets only the seccomp profile. runAsNonRoot is deliberately not
-// forced: a files backup has to read the app's data, and the operator cannot
-// know what owns it. Namespaces enforcing the restricted Pod Security Standard
-// supply their own context through spec.podSecurityContext.
+// The default is the most locked-down one that still runs a backup, which
+// satisfies the restricted Pod Security Standard. It deliberately does not set
+// fsGroup: the backup often shares a claim with the app, and fsGroup would
+// chown the app's own data as a side effect of backing it up. Data owned by a
+// specific user needs an explicit spec.podSecurityContext.
 func podSecurityContext(sb *borgbasev1.ScheduledBackup) *corev1.PodSecurityContext {
 	if sb.Spec.PodSecurityContext != nil {
 		return sb.Spec.PodSecurityContext
 	}
 	return &corev1.PodSecurityContext{
+		RunAsNonRoot:   ptr.To(true),
 		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+}
+
+// containerSecurityContext returns the backup container's security context.
+func containerSecurityContext(sb *borgbasev1.ScheduledBackup) *corev1.SecurityContext {
+	if sb.Spec.ContainerSecurityContext != nil {
+		return sb.Spec.ContainerSecurityContext
+	}
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: ptr.To(false),
+		ReadOnlyRootFilesystem:   ptr.To(true),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 	}
 }
 
@@ -316,6 +338,13 @@ func buildEnv(sb *borgbasev1.ScheduledBackup, cfg Config) ([]corev1.EnvVar, erro
 		)
 	}
 
+	if !cacheEnabled(sb) {
+		// The image points RESTIC_CACHE_DIR at the cache volume. With no such
+		// volume restic would fall back to a directory under $HOME, which it
+		// cannot create on a read-only root filesystem.
+		env = append(env, corev1.EnvVar{Name: "RESTIC_CACHE_DIR", Value: fallbackCacheDir})
+	}
+
 	hcEnv, err := Reporter(sb, cfg).Env()
 	if err != nil {
 		return nil, err
@@ -334,6 +363,14 @@ func buildEnv(sb *borgbasev1.ScheduledBackup, cfg Config) ([]corev1.EnvVar, erro
 func buildVolumes(sb *borgbasev1.ScheduledBackup) ([]corev1.Volume, []corev1.VolumeMount) {
 	var volumes []corev1.Volume
 	var mounts []corev1.VolumeMount
+
+	// Always present, so the read-only root filesystem still leaves restic and
+	// the dump tools somewhere to write.
+	volumes = append(volumes, corev1.Volume{
+		Name:     tmpVolume,
+		EmptyDir: &corev1.EmptyDirVolumeSource{},
+	})
+	mounts = append(mounts, corev1.VolumeMount{Name: tmpVolume, MountPath: tmpMountPath})
 
 	if cacheEnabled(sb) {
 		volumes = append(volumes, corev1.Volume{

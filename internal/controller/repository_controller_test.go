@@ -248,6 +248,30 @@ func TestCreatesRepositoryAndInitJob(t *testing.T) {
 	if automount := job.Spec.Template.Spec.AutomountServiceAccountToken; automount == nil || *automount {
 		t.Error("init job should not mount a service account token")
 	}
+	// It only runs `restic init`, so it can afford the strictest context there
+	// is and be admitted by a restricted namespace unchanged.
+	pod := job.Spec.Template.Spec.SecurityContext
+	if pod == nil || pod.RunAsNonRoot == nil || !*pod.RunAsNonRoot {
+		t.Errorf("init pod securityContext = %+v, want runAsNonRoot", pod)
+	}
+	sc := container.SecurityContext
+	if sc == nil || sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
+		t.Error("init container should have a read-only root filesystem")
+	}
+	if sc.Capabilities == nil || len(sc.Capabilities.Drop) == 0 {
+		t.Error("init container should drop all capabilities")
+	}
+	// A read-only root filesystem needs restic's cache pointed somewhere
+	// writable, or `restic init` cannot even start.
+	var cacheDir string
+	for _, e := range container.Env {
+		if e.Name == "RESTIC_CACHE_DIR" {
+			cacheDir = e.Value
+		}
+	}
+	if cacheDir != "/tmp/restic-cache" {
+		t.Errorf("RESTIC_CACHE_DIR = %q, want a writable path", cacheDir)
+	}
 	// Requests keep the pod out of BestEffort, which would make it the first
 	// thing evicted and leave the repository stuck uninitialized.
 	if container.Resources.Requests.Cpu().IsZero() || container.Resources.Requests.Memory().IsZero() {

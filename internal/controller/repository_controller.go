@@ -631,9 +631,16 @@ func (r *RepositoryReconciler) buildInitJob(repo *borgbasev1.Repository, name st
 				Spec: corev1.PodSpec{
 					RestartPolicy:                corev1.RestartPolicyNever,
 					AutomountServiceAccountToken: ptr.To(false),
+					// The init Job only runs `restic init`, so it can afford
+					// the most restrictive context there is.
 					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot:   ptr.To(true),
 						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
+					Volumes: []corev1.Volume{{
+						Name:     "tmp",
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					}},
 					Containers: []corev1.Container{{
 						Name:  "init",
 						Image: r.BackupImage,
@@ -647,8 +654,17 @@ func (r *RepositoryReconciler) buildInitJob(repo *borgbasev1.Repository, name st
 								Name: repo.SecretName(),
 							},
 						}},
+						// restic caches under $HOME by default, which a
+						// read-only root filesystem does not allow.
+						Env: []corev1.EnvVar{{
+							Name: "RESTIC_CACHE_DIR", Value: "/tmp/restic-cache",
+						}},
+						VolumeMounts: []corev1.VolumeMount{{
+							Name: "tmp", MountPath: "/tmp",
+						}},
 						SecurityContext: &corev1.SecurityContext{
 							AllowPrivilegeEscalation: ptr.To(false),
+							ReadOnlyRootFilesystem:   ptr.To(true),
 							Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 						},
 						// Without requests the pod is BestEffort and is the

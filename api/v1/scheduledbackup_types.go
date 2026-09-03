@@ -391,15 +391,26 @@ type ScheduledBackupSpec struct {
 	// +optional
 	Affinity *corev1.Affinity `json:"affinity,omitempty"`
 
-	// podSecurityContext overrides the backup pod's security context. The
-	// operator's default sets only the RuntimeDefault seccomp profile; set
-	// runAsNonRoot, runAsUser or fsGroup here for namespaces enforcing the
-	// restricted Pod Security Standard.
+	// podSecurityContext replaces the backup pod's security context, which by
+	// default is the most restrictive one that still runs: runAsNonRoot with
+	// the RuntimeDefault seccomp profile.
 	//
-	// It is not defaulted to runAsNonRoot because a files backup has to be able
-	// to read the app's data, whose ownership the operator cannot know.
+	// Set it when the data being backed up is owned by a specific user, since
+	// the operator cannot know what owns it. A files backup of root-owned data
+	// needs a runAsUser or fsGroup that can read it. Replacing the default
+	// replaces it wholesale, so repeat anything you still want.
 	// +optional
 	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
+
+	// containerSecurityContext replaces the backup container's security
+	// context. The default drops every capability, forbids privilege
+	// escalation and mounts the root filesystem read-only.
+	//
+	// The container gets a writable /tmp regardless, so read-only root is safe
+	// for restic and the dump tools; this exists for an image that needs to
+	// write somewhere else.
+	// +optional
+	ContainerSecurityContext *corev1.SecurityContext `json:"containerSecurityContext,omitempty"`
 
 	// podLabels adds labels to the backup pod, for network policies and the
 	// like. The mariadb-client label is added automatically for mariadb.

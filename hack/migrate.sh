@@ -40,6 +40,10 @@ get() { printf '%s' "$values" | yq -r "$1"; }
 
 schedule=$(get '.controllers.restic.cronjob.schedule')
 concurrency=$(get '.controllers.restic.cronjob.concurrencyPolicy // "Forbid"')
+# The CronJob's time zone decides what the pinned schedule actually means. The
+# CRD defaults it to America/Chicago, so an app on anything else has to carry
+# it across or every backup silently moves.
+timezone=$(get '.controllers.restic.cronjob.timeZone // ""')
 script=$(get '.controllers.restic.containers.restic.command[-1]')
 workdir=$(get '.controllers.restic.containers.restic.workingDir // ""')
 claim=$(get '[.persistence[] | select(has("existingClaim")) | .existingClaim][0] // ""')
@@ -132,6 +136,10 @@ $(emit_sources)
   retention:
 $retention
 EOF
+
+if [[ -n $timezone ]]; then
+  printf '  timeZone: %s\n' "$timezone"
+fi
 
 if [[ -n $engine ]]; then
   printf '  database:\n    engine: %s\n' "$engine"
