@@ -1,8 +1,5 @@
-// Package runner runs one-off restic commands in the cluster.
-//
-// Everything the CLI does against a repository — listing snapshots, restoring,
-// checking, an interactive shell — is the same shape: run a container that has
-// restic and the repository credentials, stream it, then clean up.
+// Package runner creates one-off Jobs modelled on a backup's CronJob, so ad-hoc restic
+// commands run with the same image, mounts and credentials as a real backup.
 package runner
 
 import (
@@ -30,9 +27,7 @@ import (
 )
 
 const (
-	// ManagedByValue marks Jobs this CLI created. It is deliberately not the
-	// operator's value: the manager's Job cache and its Owns() watch are
-	// filtered on that label, and a debugging pod is not a backup run.
+	// ManagedByValue marks the Jobs this package creates.
 	ManagedByValue = "corg"
 
 	labelManagedBy = "app.kubernetes.io/managed-by"
@@ -41,84 +36,57 @@ const (
 	dataVolume     = "data"
 	dbVolume       = "db-credentials"
 
-	// ttlSeconds is a backstop. The runner deletes its own Job on exit; this
-	// only matters if the CLI is killed outright.
 	ttlSeconds int32 = 600
 
 	pollInterval = 500 * time.Millisecond
 
-	// podStartTimeout bounds how long a pod may sit Pending. A run itself can
-	// take an hour; a pod that has not started in three minutes is stuck on
-	// something a longer wait will not fix.
 	podStartTimeout = 3 * time.Minute
 )
 
 var (
+	// ErrNoCronJob means the backup has no CronJob to model a Job on.
 	ErrNoCronJob = errors.New("no CronJob for this backup")
-	ErrFailed    = errors.New("command failed")
-	ErrNoPod     = errors.New("no pod was created")
+	// ErrFailed means the Job ran and failed.
+	ErrFailed = errors.New("command failed")
+	// ErrNoPod means the Job never produced a pod.
+	ErrNoPod = errors.New("no pod was created")
 
-	// ErrMissingDependency is returned when the Job references something that
-	// is not there, which would otherwise strand the pod in Pending.
+	// ErrMissingDependency means a Secret or claim the Job mounts is missing.
 	ErrMissingDependency = errors.New("the backup references something that does not exist")
 )
 
-// Runner creates and drives ephemeral Jobs for one ScheduledBackup.
+// Runner creates and drives one-off Jobs modelled on a backup's CronJob.
 type Runner struct {
 	Client     client.Client
 	Clientset  kubernetes.Interface
 	RESTConfig *rest.Config
 }
 
-// Options describes one ephemeral run.
+// Options are the settings for a one-off Job.
 type Options struct {
-	// Command replaces the backup script. Required.
 	Command []string
 
-	// Purpose names the run, e.g. "snapshots". It appears in the Job name.
 	Purpose string
 
-	// MountData attaches the backup's source volume writable, for restores.
-	// It also brings back the hard pod affinity the backup uses, without which
-	// a ReadWriteOnce claim cannot be mounted.
 	MountData bool
 
-	// MountCache uses the real cache PVC. Off by default: the claim may be
-	// ReadWriteOnce, in which case sharing it with a running backup would make
-	// this pod unschedulable.
 	MountCache bool
 
-	// MountDatabase attaches the database credentials. Only a restore into the
-	// database needs them; listing snapshots or opening a shell has no business
-	// holding them, and mounting a Secret a run does not use turns an unrelated
-	// misconfiguration into a failure.
 	MountDatabase bool
 
-	// Image overrides the image resolved from the CronJob.
 	Image string
 
-	// TTY requests an interactive session. The Job idles and the caller execs
-	// into it instead of reading logs.
 	TTY bool
 
-	// Keep leaves the Job behind for inspection.
 	Keep bool
 
-	// ExtraVolumes and ExtraMounts attach scratch space, such as the claim a
-	// restore is staged into.
 	ExtraVolumes []corev1.Volume
 	ExtraMounts  []corev1.VolumeMount
 }
 
-// idleCommand keeps an interactive pod alive while the caller execs into it.
 var idleCommand = []string{"sleep", "infinity"}
 
-// Build renders the Job for a run.
-//
-// The template comes from the live CronJob rather than being re-rendered,
-// because that is what the operator actually resolved: the image it defaulted
-// to, the credentials Secret, the database mounts and the affinity. Re-deriving
-// them here would mean re-implementing the operator's flags.
+// Build derives a one-off Job from the backup's CronJob. It does not create it.
 func (r *Runner) Build(
 	ctx context.Context, sb *borgbasev1.ScheduledBackup, opts Options,
 ) (*batchv1.Job, error) {
@@ -170,8 +138,7 @@ func (r *Runner) Build(
 	container.VolumeMounts = append(container.VolumeMounts, opts.ExtraMounts...)
 
 	labels := map[string]string{labelManagedBy: ManagedByValue}
-	// MariaDB network policies select clients by this label, so a restore that
-	// talks to MariaDB has to keep it.
+
 	if v, ok := spec.Template.Labels["mariadb-client"]; ok {
 		labels["mariadb-client"] = v
 	}
@@ -209,8 +176,6 @@ func findContainer(pod *corev1.PodSpec) *corev1.Container {
 	return nil
 }
 
-// useEphemeralCache swaps the shared cache claim for scratch space, keeping the
-// same mount path so RESTIC_CACHE_DIR still resolves.
 func useEphemeralCache(pod *corev1.PodSpec) {
 	for i := range pod.Volumes {
 		if pod.Volumes[i].Name == cacheVolume {
@@ -233,9 +198,6 @@ func mountDataWritable(pod *corev1.PodSpec, container *corev1.Container) {
 	}
 }
 
-// dropData removes the source volume, and with it the hard pod affinity that
-// exists only to place the pod where a ReadWriteOnce claim is already mounted.
-// Without that, a run needing no data would be pinned to one node for nothing.
 func dropData(pod *corev1.PodSpec, container *corev1.Container) {
 	pod.Volumes = filterVolumes(pod.Volumes, dataVolume)
 	container.VolumeMounts = filterMounts(container.VolumeMounts, dataVolume)
@@ -267,10 +229,7 @@ func filterMounts(in []corev1.VolumeMount, name string) []corev1.VolumeMount {
 	return out
 }
 
-// Cleanup deletes a Job and its pod.
-//
-// It takes its own context so that a run cancelled with Ctrl-C still tidies up:
-// reusing the cancelled context would leave the Job behind.
+// Cleanup deletes a Job and its pods.
 func (r *Runner) Cleanup(job *batchv1.Job) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 30*time.Second)
 	defer cancel()
@@ -282,8 +241,7 @@ func (r *Runner) Cleanup(job *batchv1.Job) error {
 	return nil
 }
 
-// WaitForPod blocks until the run's pod is past Pending, so there is something
-// to read or attach to.
+// WaitForPod waits for the Job's pod to start running.
 func (r *Runner) WaitForPod(ctx context.Context, job *batchv1.Job, timeout time.Duration) (*corev1.Pod, error) {
 	var found *corev1.Pod
 
@@ -307,8 +265,7 @@ func (r *Runner) WaitForPod(ctx context.Context, job *batchv1.Job, timeout time.
 					found = pod
 					return true, nil
 				}
-				// Surface a pod that will never start rather than waiting out
-				// the whole timeout on it.
+
 				if msg := blockedReason(pod); msg != "" {
 					return false, fmt.Errorf("%w: %s", ErrFailed, msg)
 				}
@@ -327,9 +284,6 @@ func (r *Runner) WaitForPod(ctx context.Context, job *batchv1.Job, timeout time.
 	return found, nil
 }
 
-// pendingPod names a pod still waiting when the deadline passed, with whatever
-// its own status says. Pod status is authoritative and always present, unlike
-// events, which are best-effort and evicted under load.
 func (r *Runner) pendingPod(ctx context.Context, job *batchv1.Job) string {
 	var pods corev1.PodList
 	err := r.Client.List(ctx, &pods,
@@ -351,11 +305,7 @@ func (r *Runner) pendingPod(ctx context.Context, job *batchv1.Job) string {
 	return fmt.Sprintf("%s is %s", pod.Name, detail)
 }
 
-// Preflight checks that everything the Job mounts actually exists.
-//
-// A Secret or claim that is missing leaves the pod Pending with no container
-// status to read and no reliable way to learn why, so it is far better to find
-// out before creating anything.
+// Preflight checks that the Secrets and claims the Job mounts exist.
 func (r *Runner) Preflight(ctx context.Context, job *batchv1.Job) error {
 	pod := &job.Spec.Template.Spec
 
@@ -395,7 +345,6 @@ func (r *Runner) mustExist(ctx context.Context, namespace, name string, into cli
 	return err
 }
 
-// blockedReason reports a container state that will not resolve on its own.
 func blockedReason(pod *corev1.Pod) string {
 	for _, cs := range pod.Status.ContainerStatuses {
 		if cs.State.Waiting == nil {
@@ -416,7 +365,7 @@ func blockedReason(pod *corev1.Pod) string {
 	return ""
 }
 
-// StreamLogs copies the run's output to w, following until the pod exits.
+// StreamLogs follows the pod's logs into w.
 func (r *Runner) StreamLogs(ctx context.Context, pod *corev1.Pod, w io.Writer) error {
 	stream, err := r.Clientset.CoreV1().Pods(pod.Namespace).
 		GetLogs(pod.Name, &corev1.PodLogOptions{Follow: true}).Stream(ctx)
@@ -429,7 +378,7 @@ func (r *Runner) StreamLogs(ctx context.Context, pod *corev1.Pod, w io.Writer) e
 	return err
 }
 
-// Wait blocks until the Job finishes and reports whether it succeeded.
+// Wait blocks until the Job succeeds or fails, returning ErrFailed on failure.
 func (r *Runner) Wait(ctx context.Context, job *batchv1.Job, timeout time.Duration) error {
 	key := client.ObjectKeyFromObject(job)
 
@@ -450,7 +399,7 @@ func (r *Runner) Wait(ctx context.Context, job *batchv1.Job, timeout time.Durati
 	return nil
 }
 
-// Run performs a one-off command, streaming its output to w.
+// Run builds a Job, runs it to completion and streams its logs to w.
 func (r *Runner) Run(
 	ctx context.Context,
 	sb *borgbasev1.ScheduledBackup,
@@ -482,8 +431,7 @@ func (r *Runner) Run(
 	return r.Wait(ctx, job, timeout)
 }
 
-// Attach starts an idling pod and hands it to fn, which is expected to exec
-// into it. Used for interactive sessions.
+// Attach starts an idle Job and hands its pod to fn, cleaning up afterwards.
 func (r *Runner) Attach(
 	ctx context.Context,
 	sb *borgbasev1.ScheduledBackup,
@@ -514,20 +462,17 @@ func (r *Runner) Attach(
 	return fn(pod)
 }
 
-// ContainerName is the container an interactive session should attach to.
+// ContainerName is the name of the restic container.
 const ContainerName = containerName
 
-// Exec runs a command inside an already-attached pod.
-//
-// Unlike Run it does not go through pod logs, so the command's stdout arrives
-// byte for byte. That matters for anything binary, such as a tar stream.
+// Exec runs a command in the pod's restic container.
 func (r *Runner) Exec(ctx context.Context, pod *corev1.Pod, opts kube.ExecOptions) error {
 	opts.Namespace = pod.Namespace
 	opts.Pod = pod.Name
 	if opts.Container == "" {
 		opts.Container = containerName
 	}
-	// A dump or a tar is long and open-ended; keepalives truncate it.
+
 	opts.DisablePing = true
 	return kube.Exec(ctx, r.RESTConfig, r.Clientset, opts)
 }

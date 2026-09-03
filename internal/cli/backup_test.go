@@ -44,7 +44,7 @@ func TestBackupStampsTheTriggerAnnotation(t *testing.T) {
 	if raw == "" {
 		t.Fatal("the trigger annotation was not set")
 	}
-	// The operator parses this as RFC3339; anything else is silently ignored.
+
 	if _, err := time.Parse(time.RFC3339, raw); err != nil {
 		t.Errorf("annotation %q is not RFC3339: %v", raw, err)
 	}
@@ -55,8 +55,6 @@ func TestBackupStampsTheTriggerAnnotation(t *testing.T) {
 	}
 }
 
-// The operator never reaches the trigger for a backup it cannot reconcile, so
-// the CLI must say the run is deferred rather than appear to hang.
 func TestBackupWarnsWhenNotReady(t *testing.T) {
 	sb := readyBackup(testBackupName, testRepoName)
 	sb.Status.Conditions = []metav1.Condition{{
@@ -74,9 +72,6 @@ func TestBackupWarnsWhenNotReady(t *testing.T) {
 	}
 }
 
-// A run refused by concurrencyPolicy must be reported, not waited on. The
-// operator acknowledges the trigger without a Job, which is what distinguishes
-// "refused" from "not picked up yet".
 func TestBackupReportsASkippedTrigger(t *testing.T) {
 	sb := readyBackup(testBackupName, testRepoName)
 	acked := metav1.NewTime(time.Now().Add(time.Hour))
@@ -93,7 +88,6 @@ func TestBackupReportsASkippedTrigger(t *testing.T) {
 	}
 }
 
-// The happy path: the operator names the Job it started and the CLI follows it.
 func TestBackupWaitsForAnAcknowledgedRun(t *testing.T) {
 	sb := readyBackup(testBackupName, testRepoName)
 	acked := metav1.NewTime(time.Now().Add(time.Hour))
@@ -115,7 +109,6 @@ func TestBackupWaitsForAnAcknowledgedRun(t *testing.T) {
 	}
 }
 
-// A failed run must exit non-zero so it can gate a script.
 func TestBackupFailsOnAFailedRun(t *testing.T) {
 	sb := readyBackup(testBackupName, testRepoName)
 	acked := metav1.NewTime(time.Now().Add(time.Hour))
@@ -150,7 +143,7 @@ func TestCancelDeletesRunningJobsOnly(t *testing.T) {
 	if !strings.Contains(buf.String(), "cancelled job/running") {
 		t.Errorf("expected the running job to be cancelled:\n%s", buf.String())
 	}
-	// The lock warning matters: a killed restic leaves one behind.
+
 	if !strings.Contains(buf.String(), "unlock") {
 		t.Errorf("expected a stale-lock warning:\n%s", buf.String())
 	}

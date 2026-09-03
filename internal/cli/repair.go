@@ -19,6 +19,7 @@ import (
 	"github.com/clevyr/borgbase-operator/internal/secrets"
 )
 
+// ErrNotInitialized means restic init has not run against the repository yet.
 var ErrNotInitialized = errors.New("repository is not initialized")
 
 func newReinitCommand(f *Factory) *cobra.Command {
@@ -60,8 +61,6 @@ already exists is a no-op.`,
 func runReinit(ctx context.Context, c client.Client, out io.Writer, repo *borgbasev1.Repository) error {
 	p := newPrinter(out)
 
-	// Remove the failed Job first. Clearing the flag while it still exists
-	// would have the operator wait on the old Job rather than start a new one.
 	var jobs batchv1.JobList
 	if err := c.List(ctx, &jobs, client.InNamespace(repo.Namespace)); err != nil {
 		return err
@@ -139,9 +138,6 @@ you have somewhere to put it.`,
 	return cmd
 }
 
-// newKeySecretName is the short-lived Secret the new password is passed
-// through. It is mounted rather than put in the pod spec, so the password never
-// appears in a Job definition.
 func newKeySecretName(repo *borgbasev1.Repository) string {
 	return repo.Name + "-corg-newkey"
 }
@@ -207,8 +203,6 @@ func runRotatePassword(
 		return fmt.Errorf("adding the new key: %w", err)
 	}
 
-	// Only now is the Secret repointed. If the key add had failed, the old
-	// password would still be the one in the Secret and nothing would break.
 	patch := client.MergeFrom(current.DeepCopy())
 	current.Data[controller.KeyResticPassword] = []byte(password)
 	if err := c.Patch(ctx, current, patch); err != nil {
@@ -225,8 +219,6 @@ func runRotatePassword(
 }
 
 func deleteTempKeySecret(c client.Client, temp *corev1.Secret) error {
-	// Detached from the caller's context so a cancelled rotation does not leave
-	// a password lying around in a Secret.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), cleanupTimeout)
 	defer cancel()
 

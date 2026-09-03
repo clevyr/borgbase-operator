@@ -29,7 +29,7 @@ func TestEnvRedactsByDefault(t *testing.T) {
 	if strings.Contains(out, "pw") && !strings.Contains(out, redacted) {
 		t.Errorf("password leaked into output:\n%s", out)
 	}
-	// The URL embeds the password, so it must be redacted too.
+
 	if strings.Contains(out, "id:pw@") {
 		t.Errorf("password leaked via RESTIC_REPOSITORY:\n%s", out)
 	}
@@ -38,7 +38,7 @@ func TestEnvRedactsByDefault(t *testing.T) {
 			t.Errorf("expected %q in output:\n%s", want, out)
 		}
 	}
-	// The notice must go to stderr so `eval "$(corg env ...)"` stays clean.
+
 	if !strings.Contains(errOut, "--show-password") {
 		t.Errorf("expected a hint on stderr, got %q", errOut)
 	}
@@ -65,7 +65,6 @@ func TestEnvShowPassword(t *testing.T) {
 	}
 }
 
-// A ScheduledBackup resolves through to its repository's credentials.
 func TestEnvViaScheduledBackup(t *testing.T) {
 	r := readyRepo(testNS)
 	sb := readyBackup(testBackupName, testRepoName)
@@ -91,7 +90,7 @@ func TestRedactResticURL(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{"rest:https://abcd:secret@abcd.repo.borgbase.com", "rest:https://abcd:***@abcd.repo.borgbase.com"},
 		{"rest:https://abcd@abcd.repo.borgbase.com", "rest:https://abcd@abcd.repo.borgbase.com"},
-		// Anything unrecognised is withheld rather than echoed.
+
 		{"s3:s3.amazonaws.com/bucket", redacted},
 		{"", redacted},
 		{"garbage", redacted},

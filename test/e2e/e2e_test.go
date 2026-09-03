@@ -19,24 +19,17 @@ import (
 	"github.com/clevyr/borgbase-operator/test/utils"
 )
 
-// namespace where the project is deployed in
 const namespace = "borgbase-operator-system"
 
-// serviceAccountName created for the project
 const serviceAccountName = "borgbase-operator-controller-manager"
 
-// metricsServiceName is the name of the metrics service of the project
 const metricsServiceName = "borgbase-operator-controller-manager-metrics-service"
 
-// metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "borgbase-operator-metrics-binding"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
 
-	// Before running the tests, set up the environment by creating the namespace,
-	// enforce the restricted security policy to the namespace, installing CRDs,
-	// and deploying the controller.
 	BeforeAll(func() {
 		By("creating manager namespace")
 		cmd := exec.Command("kubectl", "create", "ns", namespace)
@@ -79,8 +72,6 @@ var _ = Describe("Manager", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred(), "controller-manager did not roll out")
 	})
 
-	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
-	// and deleting the namespace.
 	AfterAll(func() {
 		By("cleaning up the curl pod for metrics")
 		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
@@ -99,8 +90,6 @@ var _ = Describe("Manager", Ordered, func() {
 		_, _ = utils.Run(cmd)
 	})
 
-	// After each test, check for failures and collect logs, events,
-	// and pod descriptions for debugging.
 	AfterEach(func() {
 		specReport := CurrentSpecReport()
 		if specReport.Failed() {
@@ -275,11 +264,6 @@ var _ = Describe("Manager", Ordered, func() {
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 
-		// A ScheduledBackup whose Repository does not exist must report why and
-		// must not create a CronJob. This exercises the whole controller path
-		// (watch, reconcile, status write) against a real API server without
-		// needing BorgBase credentials, and it guards the invariant that
-		// matters most here: never schedule a backup that cannot succeed.
 		It("should refuse to schedule a backup with no repository", func() {
 			const (
 				testNS = "borgbase-e2e"
@@ -333,10 +317,6 @@ spec:
 			Expect(cronjobs).To(BeEmpty(), "a backup was scheduled against a missing repository")
 		})
 
-		// The Repository controller is the half of this operator that talks to
-		// an external service, so nothing else in the suite covers it. Against
-		// the stub it can be driven end to end: created in BorgBase, recorded
-		// in status, credentials written, and an init Job started.
 		It("should create a repository and write its credentials", func() {
 			const (
 				testNS = "borgbase-e2e-repo"
@@ -379,8 +359,7 @@ spec:
 			Eventually(verifyRecorded, 2*time.Minute).Should(Succeed())
 
 			By("checking the credentials Secret")
-			// Written as Data, so both keys must be readable back out; the
-			// password is the only copy of the encryption key.
+
 			cmd = exec.Command("kubectl", "get", "secret", name+"-borgbase", "-n", testNS,
 				"-o", "jsonpath={.data.RESTIC_PASSWORD}")
 			password, err := utils.Run(cmd)
@@ -404,8 +383,7 @@ spec:
 				"Retain must not own the Secret; it is the only copy of the encryption key")
 
 			By("waiting for the init Job to be created")
-			// It will not succeed, since the stub serves no restic repository.
-			// That the operator got this far is the point.
+
 			verifyInitJob := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "job", name+"-init", "-n", testNS,
 					"-o", "jsonpath={.metadata.name}")
@@ -426,8 +404,6 @@ spec:
 			Eventually(verifyInitializing, 2*time.Minute).Should(Succeed())
 		})
 
-		// A wrong ID must fail loudly rather than quietly provisioning an empty
-		// repository beside the real backups.
 		It("should refuse to adopt a repository that does not exist", func() {
 			const (
 				testNS = "borgbase-e2e-adopt"
@@ -481,12 +457,6 @@ spec:
 			Expect(err).To(HaveOccurred(), "credentials were written for a repository that does not exist")
 		})
 
-		// Status used to be written with a full Update, which carries the
-		// resourceVersion read from the informer cache. That cache lags behind
-		// the controller's own writes, so the write lost a conflict, the status
-		// never landed, and the next pass redid work it had already done. A
-		// fake client has no cache and cannot reproduce this, so it is asserted
-		// against a real API server here.
 		It("should persist status without conflicting on its own writes", func() {
 			const (
 				testNS = "borgbase-e2e-status"
@@ -522,8 +492,7 @@ spec:
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply the ScheduledBackup")
 
 			By("forcing repeated reconciles")
-			// Each spec change bumps the generation, so the controller writes
-			// status again while the cache is still catching up from the last.
+
 			for i := range 5 {
 				cmd = exec.Command("kubectl", "patch", "scheduledbackup", name, "-n", testNS,
 					"--type=merge", "-p", fmt.Sprintf(`{"spec":{"timeZone":"Etc/GMT+%d"}}`, i+1))
@@ -554,9 +523,6 @@ spec:
 	})
 })
 
-// serviceAccountToken returns a token for the specified service account in the given namespace.
-// It uses the Kubernetes TokenRequest API to generate a token by directly sending a request
-// and parsing the resulting token from the API response.
 func serviceAccountToken() (string, error) {
 	const tokenRequestRawString = `{
 		"apiVersion": "authentication.k8s.io/v1",
@@ -595,15 +561,12 @@ func serviceAccountToken() (string, error) {
 	return out, err
 }
 
-// getMetricsOutput retrieves and returns the logs from the curl pod used to access the metrics endpoint.
 func getMetricsOutput() (string, error) {
 	By("getting the curl-metrics logs")
 	cmd := exec.Command("kubectl", "logs", "curl-metrics", "-n", namespace)
 	return utils.Run(cmd)
 }
 
-// tokenRequest is a simplified representation of the Kubernetes TokenRequest API response,
-// containing only the token field that we need to extract.
 type tokenRequest struct {
 	Status struct {
 		Token string `json:"token"`

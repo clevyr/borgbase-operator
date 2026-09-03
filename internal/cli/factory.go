@@ -22,19 +22,16 @@ import (
 	borgbasev1 "github.com/clevyr/borgbase-operator/api/v1"
 )
 
-// Factory lazily builds the clients a command needs from the standard kubectl
-// connection flags, so no command pays for a connection it does not use.
+// Factory builds the Kubernetes clients the CLI commands share, lazily and once.
 type Factory struct {
 	ConfigFlags *genericclioptions.ConfigFlags
 	Streams     genericiooptions.IOStreams
 
-	// allNamespaces is bound to -A by the root command.
 	allNamespaces bool
 
 	stdinOnce sync.Once
 	stdin     *bufio.Reader
 
-	// interactive overrides terminal detection in tests.
 	interactive *bool
 
 	once struct {
@@ -52,16 +49,15 @@ type Factory struct {
 	csErr      error
 }
 
+// NewFactory returns a Factory using the given I/O streams.
 func NewFactory(streams genericiooptions.IOStreams) *Factory {
 	return &Factory{
-		// usePersistentConfig keeps the discovery cache warm across calls.
 		ConfigFlags: genericclioptions.NewConfigFlags(true),
 		Streams:     streams,
 	}
 }
 
-// Scheme carries the operator's own types alongside the core and batch types
-// the CLI reads directly.
+// Scheme returns the runtime scheme, including the borgbase types.
 func (f *Factory) Scheme() *runtime.Scheme {
 	f.once.scheme.Do(func() {
 		s := runtime.NewScheme()
@@ -73,6 +69,7 @@ func (f *Factory) Scheme() *runtime.Scheme {
 	return f.scheme
 }
 
+// RESTConfig returns the client config from the kubeconfig and flags.
 func (f *Factory) RESTConfig() (*rest.Config, error) {
 	f.once.restConfig.Do(func() {
 		f.restConfig, f.restErr = f.ConfigFlags.ToRESTConfig()
@@ -80,7 +77,7 @@ func (f *Factory) RESTConfig() (*rest.Config, error) {
 	return f.restConfig, f.restErr
 }
 
-// Client returns a typed client for the operator's CRDs and the objects it owns.
+// Client returns a controller-runtime client.
 func (f *Factory) Client() (client.Client, error) {
 	f.once.client.Do(func() {
 		cfg, err := f.RESTConfig()
@@ -93,8 +90,7 @@ func (f *Factory) Client() (client.Client, error) {
 	return f.client, f.clientErr
 }
 
-// Clientset is needed for the subresources controller-runtime does not expose:
-// pod logs and exec.
+// Clientset returns a client-go clientset.
 func (f *Factory) Clientset() (*kubernetes.Clientset, error) {
 	f.once.clientset.Do(func() {
 		cfg, err := f.RESTConfig()
@@ -107,14 +103,13 @@ func (f *Factory) Clientset() (*kubernetes.Clientset, error) {
 	return f.clientset, f.csErr
 }
 
-// Namespace resolves -n, falling back to the kubeconfig context's namespace.
+// Namespace returns the namespace to act on.
 func (f *Factory) Namespace() (string, error) {
 	ns, _, err := f.ConfigFlags.ToRawKubeConfigLoader().Namespace()
 	return ns, err
 }
 
-// ListNamespace is the namespace to list in: empty means every namespace, which
-// is how the client expresses a cluster-wide list.
+// ListNamespace returns the namespace to list in, or empty for all namespaces.
 func (f *Factory) ListNamespace() (string, error) {
 	if f.allNamespaces {
 		return "", nil
@@ -122,28 +117,22 @@ func (f *Factory) ListNamespace() (string, error) {
 	return f.Namespace()
 }
 
-// AllNamespaces reports whether -A was passed.
+// AllNamespaces reports whether --all-namespaces was given.
 func (f *Factory) AllNamespaces() bool { return f.allNamespaces }
 
-// AddAllNamespacesFlag registers -A on the commands that can honour it, rather
-// than on the root, so a flag never appears where it would be meaningless.
+// AddAllNamespacesFlag registers the --all-namespaces flag on cmd.
 func (f *Factory) AddAllNamespacesFlag(cmd *cobra.Command) {
 	cmd.Flags().BoolVarP(&f.allNamespaces, "all-namespaces", "A", false,
 		"List the requested objects across all namespaces")
 }
 
-// Stdin is a single buffered reader over the input stream.
-//
-// Every prompt must share it. A second bufio.Reader over the same stream would
-// start with an empty buffer while the first still holds bytes the user has
-// already typed, so a confirmation following a prompt could silently read
-// nothing.
+// Stdin returns a buffered reader over the input stream.
 func (f *Factory) Stdin() *bufio.Reader {
 	f.stdinOnce.Do(func() { f.stdin = bufio.NewReader(f.Streams.In) })
 	return f.stdin
 }
 
-// Interactive reports whether input is a terminal, so a prompt is possible.
+// Interactive reports whether the CLI is attached to a terminal.
 func (f *Factory) Interactive() bool {
 	if f.interactive != nil {
 		return *f.interactive

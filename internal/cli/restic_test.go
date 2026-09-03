@@ -16,9 +16,9 @@ func TestSourceTags(t *testing.T) {
 	sb.Spec.Sources = []borgbasev1.BackupSource{
 		{Type: borgbasev1.SourceTypeCNPG},
 		{Type: borgbasev1.SourceTypeFiles},
-		// A second database under its own tag.
+
 		{Type: borgbasev1.SourceTypeCNPG, Tag: testDBTag},
-		// A duplicate must not produce a duplicate filter.
+
 		{Type: borgbasev1.SourceTypeFiles},
 	}
 
@@ -29,7 +29,6 @@ func TestSourceTags(t *testing.T) {
 	}
 }
 
-// A manual prune must apply exactly the policy the scheduled one does.
 func TestRetentionFlags(t *testing.T) {
 	if got := retentionFlags(nil); got != nil {
 		t.Errorf("retentionFlags(nil) = %v, want nil", got)
@@ -50,8 +49,6 @@ func TestRetentionFlags(t *testing.T) {
 	}
 }
 
-// A repository-scoped command borrows a backup's credentials and placement,
-// because that is the only place the operator's resolved config exists.
 func TestResolveRunTargetFindsABackupForARepository(t *testing.T) {
 	repo := newRepo(testNS)
 	sb := newBackup(testBackupName, testRepoName)
@@ -78,7 +75,6 @@ func TestResolveRunTargetWithoutAnyBackup(t *testing.T) {
 	}
 }
 
-// A backup referencing a different repository must not be borrowed.
 func TestResolveRunTargetIgnoresUnrelatedBackups(t *testing.T) {
 	repo := newRepo(testNS)
 	other := newBackup("other", "somewhere-else")

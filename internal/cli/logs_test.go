@@ -44,9 +44,9 @@ func TestBackupJobsFindsBothOwnersNewestFirst(t *testing.T) {
 	c := newClient(t, sb, cj,
 		jobOwnedBy("scheduled-old", cj.UID, "CronJob", 48*time.Hour),
 		jobOwnedBy("scheduled-new", cj.UID, "CronJob", 2*time.Hour),
-		// A run triggered directly is owned by the ScheduledBackup, not the CronJob.
+
 		jobOwnedBy("manual", sb.UID, "ScheduledBackup", 30*time.Minute),
-		// Unrelated work in the same namespace must be ignored.
+
 		jobOwnedBy("someone-elses", "uid-stranger", "CronJob", 1*time.Minute),
 	)
 
@@ -96,7 +96,7 @@ func TestSelectJob(t *testing.T) {
 	if _, err := selectJob(nil, false); !errors.Is(err, ErrNoRuns) {
 		t.Errorf("expected ErrNoRuns, got %v", err)
 	}
-	// Asking for the previous run when only one exists must say so.
+
 	_, err = selectJob(jobs[:1], true)
 	if !errors.Is(err, ErrNoRuns) || !strings.Contains(err.Error(), "only one run") {
 		t.Errorf("expected a single-run message, got %v", err)
@@ -155,7 +155,6 @@ func TestRunLogsNoRuns(t *testing.T) {
 	}
 }
 
-// Older clusters label job pods without the batch.kubernetes.io prefix.
 func TestPodsForJobFallsBackToLegacyLabel(t *testing.T) {
 	job := jobOwnedBy("scheduled", "u", "CronJob", time.Hour)
 	pod := jobPod("scheduled-abcde", "scheduled")

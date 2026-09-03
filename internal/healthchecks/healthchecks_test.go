@@ -90,7 +90,6 @@ func TestSlugMode(t *testing.T) {
 	}
 }
 
-// Pinging by UUID is the adoption path for a check that cannot be given a slug.
 func TestUUIDAdoptionMode(t *testing.T) {
 	r := Resolve(testConfig(), Overrides{
 		UUIDRef: &corev1.SecretKeySelector{
@@ -109,7 +108,7 @@ func TestUUIDAdoptionMode(t *testing.T) {
 	if envOf(env, EnvSlug) != nil {
 		t.Errorf("uuid mode must not also set %s", EnvSlug)
 	}
-	// -create only means anything for slug pings.
+
 	if slices.Contains(r.Wrap([]string{"true"}), "-create") {
 		t.Error("uuid mode must not pass -create")
 	}
@@ -131,8 +130,6 @@ func TestDisabledLeavesCommandAndEnvAlone(t *testing.T) {
 	}
 }
 
-// There is deliberately no cluster-wide ping key, so an enabled reporter with
-// no key must fail loudly rather than silently stop reporting.
 func TestEnabledWithoutAnyKeyIsAnError(t *testing.T) {
 	r := Resolve(testConfig(), Overrides{}, "myapp-prod")
 	if _, err := r.Env(); err == nil {

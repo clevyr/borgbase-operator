@@ -44,7 +44,6 @@ func TestRestoreRefusesTwoTargets(t *testing.T) {
 	}
 }
 
-// Without a terminal a script must never restore somewhere it did not name.
 func TestRestoreWithoutATargetIsRefusedNonInteractively(t *testing.T) {
 	sb := newBackup(testBackupName, testRepoName)
 	withVolume(sb)
@@ -59,7 +58,7 @@ func TestRestoreWithoutATargetIsRefusedNonInteractively(t *testing.T) {
 	if !errors.Is(err, ErrNoTarget) {
 		t.Fatalf("expected ErrNoTarget, got %v", err)
 	}
-	// It must list what is actually possible for this backup.
+
 	for _, want := range []string{"--to DIR", "--to-new-pvc", "--in-place", "--to-database", testClaimName} {
 		if !strings.Contains(errOut.String(), want) {
 			t.Errorf("expected %q in the target list:\n%s", want, errOut.String())
@@ -67,7 +66,6 @@ func TestRestoreWithoutATargetIsRefusedNonInteractively(t *testing.T) {
 	}
 }
 
-// A backup with no volume must not be offered volume targets.
 func TestAvailableTargetsMatchTheBackup(t *testing.T) {
 	dbOnly := newBackup(testBackupName, testRepoName)
 	withDatabase(dbOnly)
@@ -103,8 +101,6 @@ func TestRestoreRejectsMissingSources(t *testing.T) {
 }
 
 func TestConfirmRequiresTheExactName(t *testing.T) {
-	// A pipe is not a terminal, so these exercise the non-interactive refusal
-	// separately below; here the reader stands in for typed input.
 	f := &Factory{Streams: testStreams()}
 	f.Streams.In = strings.NewReader("wrong-name\n")
 	f.stdinOnce.Do(func() { f.stdin = bufio.NewReader(f.Streams.In) })
@@ -126,8 +122,6 @@ func TestConfirmRequiresTheExactName(t *testing.T) {
 	}
 }
 
-// In CI there is nobody to prompt, so a destructive command must refuse rather
-// than read EOF and report a confusing mismatch.
 func TestConfirmRefusesWithoutATerminal(t *testing.T) {
 	f := &Factory{Streams: testStreams()}
 	err := confirm(f, false, "pvc/app-data", testBackupName)
@@ -139,8 +133,6 @@ func TestConfirmRefusesWithoutATerminal(t *testing.T) {
 	}
 }
 
-// Both prompts must share one reader, or the first swallows what the second
-// needs to read.
 func TestPromptsShareOneReader(t *testing.T) {
 	f := &Factory{Streams: testStreams()}
 	f.Streams.In = strings.NewReader("1\n" + testBackupName + "\n")
@@ -181,8 +173,6 @@ func TestResticRestoreArgs(t *testing.T) {
 	}
 }
 
-// The extension must match what the backup image's wrapper used when it named
-// the dump inside the snapshot, or the restore reads a file that is not there.
 func TestDumpExtension(t *testing.T) {
 	if got := dumpExtension(borgbasev1.DatabaseEngineCNPG); got != ".dmp" {
 		t.Errorf("cnpg = %q, want .dmp", got)
@@ -206,7 +196,6 @@ func TestClaimSize(t *testing.T) {
 	c := newClient(t, sb, source)
 	ctx := context.Background()
 
-	// Inherited from the claim being restored, so the copy is sure to fit.
 	got, err := claimSize(ctx, c, sb, "")
 	if err != nil {
 		t.Fatalf("claimSize: %v", err)
@@ -219,7 +208,6 @@ func TestClaimSize(t *testing.T) {
 		t.Errorf("--size override = %s, %v", got.String(), err)
 	}
 
-	// A missing source claim must say how to proceed.
 	missing := newBackup("other", testRepoName)
 	missing.Spec.Volume = &borgbasev1.VolumeSpec{ExistingClaim: "gone"}
 	if _, err := claimSize(ctx, c, missing, ""); err == nil || !strings.Contains(err.Error(), "--size") {
@@ -263,8 +251,6 @@ func TestUntar(t *testing.T) {
 	}
 }
 
-// A snapshot is not necessarily trusted input; an entry must not escape the
-// directory the user named.
 func TestUntarRefusesPathTraversal(t *testing.T) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
@@ -283,8 +269,6 @@ func TestUntarRefusesPathTraversal(t *testing.T) {
 
 	dest := t.TempDir()
 	if _, err := untar(&buf, dest); err != nil {
-		// Cleaning the name to /escape.txt keeps it inside dest, which is the
-		// safe outcome; an error is equally acceptable.
 		if !strings.Contains(err.Error(), "outside the target directory") {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -295,9 +279,6 @@ func TestUntarRefusesPathTraversal(t *testing.T) {
 	}
 }
 
-// A backup that takes files as well as a database writes two snapshots, and the
-// files one is newer. Restoring the database from an unqualified "latest" then
-// reads a snapshot with no dump in it.
 func TestDatabaseRestoreTargetsTheDatabaseSnapshot(t *testing.T) {
 	sb := newBackup(testBackupName, testRepoName)
 	sb.Spec.Sources = []borgbasev1.BackupSource{
@@ -308,13 +289,11 @@ func TestDatabaseRestoreTargetsTheDatabaseSnapshot(t *testing.T) {
 		t.Errorf("databaseSourceTag = %q, want %q", got, "db")
 	}
 
-	// A source with its own tag is respected.
 	sb.Spec.Sources[0].Tag = testDBTag
 	if got := databaseSourceTag(sb); got != testDBTag {
 		t.Errorf("databaseSourceTag = %q, want %q", got, testDBTag)
 	}
 
-	// A files-only backup has no database snapshot to name.
 	filesOnly := newBackup(testBackupName, testRepoName)
 	filesOnly.Spec.Sources = []borgbasev1.BackupSource{{Type: borgbasev1.SourceTypeFiles}}
 	if got := databaseSourceTag(filesOnly); got != "" {

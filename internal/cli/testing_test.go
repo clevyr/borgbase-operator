@@ -7,7 +7,6 @@ import (
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 )
 
-// Fixture values shared by the CLI tests.
 const (
 	testNS         = "prod"
 	testRepoName   = "store"

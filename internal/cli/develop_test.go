@@ -9,7 +9,6 @@ import (
 	"testing"
 )
 
-// A HelmRelease stub parity can read with yq.
 func writeHelmRelease(t *testing.T, schedule string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "helmrelease.yaml")
@@ -70,8 +69,6 @@ func parity(t *testing.T, generated, original string) (string, error) {
 	return buf.String(), err
 }
 
-// Migration re-jitters the minute on purpose. That must not read as a
-// difference, or every app reports one and the real ones are buried.
 func TestParityAcceptsAReJitteredSchedule(t *testing.T) {
 	out, err := parity(t, "@hourly", "36 * * * *")
 	if err != nil {
@@ -84,7 +81,6 @@ func TestParityAcceptsAReJitteredSchedule(t *testing.T) {
 	}
 }
 
-// But a real change in how often a backup runs must still fail.
 func TestParityCatchesACadenceChange(t *testing.T) {
 	out, err := parity(t, "@daily", "36 * * * *")
 	if !errors.Is(err, ErrParityDiffers) {
@@ -95,7 +91,6 @@ func TestParityCatchesACadenceChange(t *testing.T) {
 	}
 }
 
-// A schedule left pinned verbatim reports IDENTICAL, not EQUIVALENT.
 func TestParityIdenticalWhenNothingMoved(t *testing.T) {
 	out, err := parity(t, "36 * * * *", "36 * * * *")
 	if err != nil {

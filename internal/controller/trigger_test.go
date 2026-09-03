@@ -64,11 +64,11 @@ func TestTriggerCreatesOneJob(t *testing.T) {
 	if want := backup.ManualJobName(scheduledBackup(), at); jobs[0].Name != want {
 		t.Errorf("job name = %q, want %q", jobs[0].Name, want)
 	}
-	// Without the managed-by label the manager's filtered cache never sees it.
+
 	if got := jobs[0].Labels["app.kubernetes.io/managed-by"]; got != "borgbase-operator" {
 		t.Errorf("managed-by = %q, want borgbase-operator", got)
 	}
-	// Owned by the ScheduledBackup, so CronJob history limits cannot delete it.
+
 	if owner := metav1.GetControllerOf(&jobs[0]); owner == nil || owner.Kind != "ScheduledBackup" {
 		t.Errorf("expected a ScheduledBackup owner, got %+v", owner)
 	}
@@ -82,7 +82,6 @@ func TestTriggerCreatesOneJob(t *testing.T) {
 	}
 }
 
-// Reconciling repeatedly must not keep starting backups.
 func TestTriggerIsIdempotent(t *testing.T) {
 	r, c := backupHarness(t, initializedRepo(), triggeredBackup(triggerAt, nil))
 	for range 3 {
@@ -93,7 +92,6 @@ func TestTriggerIsIdempotent(t *testing.T) {
 	}
 }
 
-// Re-annotating with a newer timestamp starts another run.
 func TestRetriggerStartsAnotherRun(t *testing.T) {
 	r, c := backupHarness(t, initializedRepo(), triggeredBackup(triggerAt, nil))
 	reconcileBackup(t, r)
@@ -110,8 +108,6 @@ func TestRetriggerStartsAnotherRun(t *testing.T) {
 	}
 }
 
-// Suspending the schedule then running a backup by hand is the main reason to
-// suspend one, so a trigger must override it.
 func TestTriggerOverridesSuspend(t *testing.T) {
 	r, c := backupHarness(t, initializedRepo(),
 		triggeredBackup(triggerAt, func(sb *borgbasev1.ScheduledBackup) { sb.Spec.Suspend = true }))
@@ -122,14 +118,12 @@ func TestTriggerOverridesSuspend(t *testing.T) {
 	}
 }
 
-// Two restic processes against one repository would collide on the lock.
 func TestTriggerRespectsForbidConcurrency(t *testing.T) {
 	sb := triggeredBackup(triggerAt, func(sb *borgbasev1.ScheduledBackup) {
 		sb.Spec.ConcurrencyPolicy = batchv1.ForbidConcurrent
 	})
 	r, c := backupHarness(t, initializedRepo(), sb)
 
-	// Seed a run that is already in flight, owned by the ScheduledBackup.
 	running := &batchv1.Job{
 		Namespace: testNS, Name: "already-running",
 		Labels: map[string]string{
@@ -151,7 +145,7 @@ func TestTriggerRespectsForbidConcurrency(t *testing.T) {
 	if jobs := manualJobs(t, c); len(jobs) != 1 {
 		t.Fatalf("expected no new Job while one is running, got %d", len(jobs))
 	}
-	// The trigger is still recorded, or it would be retried on every pass.
+
 	got := loadBackup(t, c)
 	if got.Status.LastTriggerTime == nil {
 		t.Error("a skipped trigger must still be recorded")
@@ -168,16 +162,12 @@ func TestTriggerIgnoresMalformedTimestamp(t *testing.T) {
 	if jobs := manualJobs(t, c); len(jobs) != 0 {
 		t.Fatalf("expected no Job for a malformed trigger, got %d", len(jobs))
 	}
-	// The rest of the reconcile must still have happened.
+
 	if loadBackup(t, c).Status.EffectiveSchedule == "" {
 		t.Error("a bad annotation must not wedge the reconcile")
 	}
 }
 
-// Creating the Job enqueues a second reconcile that can read a ScheduledBackup
-// whose status write has not reached the cache yet. Without recognising the
-// Job's own name, that pass records a backup that is running as one that was
-// never started -- which is what `corg backup --wait` then reports.
 func TestTriggerIsNotSkippedByItsOwnJob(t *testing.T) {
 	sb := triggeredBackup(triggerAt, func(sb *borgbasev1.ScheduledBackup) {
 		sb.Spec.ConcurrencyPolicy = batchv1.ForbidConcurrent
@@ -191,8 +181,6 @@ func TestTriggerIsNotSkippedByItsOwnJob(t *testing.T) {
 		t.Fatalf("expected 1 manual Job, got %d", len(jobs))
 	}
 
-	// Simulate the stale read: the Job exists and is running, but the status
-	// write recording the trigger has not landed.
 	jobs[0].Status.Active = 1
 	if err := c.Status().Update(context.Background(), &jobs[0]); err != nil {
 		t.Fatal(err)

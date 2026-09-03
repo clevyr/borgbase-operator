@@ -74,7 +74,7 @@ func TestGetTable(t *testing.T) {
 			t.Errorf("expected %q in output:\n%s", want, out)
 		}
 	}
-	// The namespace column only appears with -A.
+
 	if strings.Contains(out, "NAMESPACE") {
 		t.Errorf("unexpected NAMESPACE column without -A:\n%s", out)
 	}

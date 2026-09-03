@@ -7,12 +7,9 @@ import (
 	"testing"
 )
 
-// testKey stands in for a resource identity, "<namespace>/<name>".
 const testKey = "myapp-prod/restic"
 
 func TestResolveScheduleVerbatim(t *testing.T) {
-	// An explicit cron expression must survive migration unchanged, so that
-	// moving an app onto the operator does not move when it backs up.
 	for _, expr := range []string{
 		testSchedule, "36 * * * *", "58 * * * *",
 		"27 */6 * * *", "29 */6 * * *",
@@ -61,9 +58,6 @@ func TestResolveScheduleShorthands(t *testing.T) {
 }
 
 func TestResolveScheduleRejectsUnevenSteps(t *testing.T) {
-	// A step that does not divide its period evenly produces an irregular gap
-	// when cron restarts the sequence, which would quietly break the retention
-	// assumptions of an hourly or six-hourly backup.
 	for _, expr := range []string{"@every 7h", "@every 25m", "@every 90s", "@every 0h", "@every 48h", "@nonsense"} {
 		if _, err := ResolveSchedule(expr, "k"); err == nil {
 			t.Errorf("ResolveSchedule(%q) expected an error", expr)
@@ -86,9 +80,6 @@ func TestJitterIsStableAndDistributed(t *testing.T) {
 		}
 	}
 
-	// The whole point of jitter is that copy-pasted backups do not stampede, so
-	// a fleet-sized set of namespace-shaped keys must land on a good spread of
-	// minutes.
 	names := []string{
 		"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
 		"india", "juliett", "kilo", "lima", "mike", "november", "oscar", "papa",
@@ -111,8 +102,7 @@ func TestJitterIsStableAndDistributed(t *testing.T) {
 		}
 		minutes[strings.Fields(got)[0]]++
 	}
-	// With 31 backups over 60 minutes some collisions are expected, but a
-	// heavy pile-up would mean the hash is not spreading them.
+
 	for minute, n := range minutes {
 		if n > 3 {
 			t.Errorf("minute %s has %d backups, want at most 3", minute, n)
@@ -124,10 +114,6 @@ func TestJitterIsStableAndDistributed(t *testing.T) {
 	}
 }
 
-// "@every 24h" and "@daily" mean the same thing, so they must resolve to the
-// same time. The hour used to be hashed from the minute, which both collapsed
-// a day's worth of slots into sixty and gave one resource two different
-// schedules depending on how it spelled the same cadence.
 func TestEveryDayMatchesDaily(t *testing.T) {
 	for _, key := range []string{testKey, "other-prod/restic", "third-staging/restic"} {
 		daily, err := ResolveSchedule("@daily", key)
@@ -144,9 +130,6 @@ func TestEveryDayMatchesDaily(t *testing.T) {
 	}
 }
 
-// A stepped schedule needs jitter as much as any other. A plain "*/15" starts
-// at zero for everyone, which is the stampede on the top of the hour that
-// jitter exists to prevent.
 func TestEveryStepsArePhaseShifted(t *testing.T) {
 	keys := []string{
 		"alpha-prod/restic", "bravo-prod/restic", "charlie-prod/restic",
@@ -169,8 +152,6 @@ func TestEveryStepsArePhaseShifted(t *testing.T) {
 	}
 }
 
-// The offset has to stay inside the step, or cron never reaches it: "20-59/15"
-// fires at 20, 35 and 50 but a "70-59/15" would fire never.
 func TestEveryOffsetStaysWithinTheStep(t *testing.T) {
 	for _, key := range []string{"a/x", "b/y", "c/z", testKey, "zulu-staging/restic"} {
 		got, err := ResolveSchedule("@every 15m", key)

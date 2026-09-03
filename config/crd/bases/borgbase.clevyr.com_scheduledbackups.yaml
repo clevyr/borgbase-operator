@@ -33,7 +33,7 @@ spec:
     name: v1
     schema:
       openAPIV3Schema:
-        description: ScheduledBackup is the Schema for the scheduledbackups API.
+        description: ScheduledBackup is a recurring restic backup into a Repository.
         properties:
           apiVersion:
             description: |-
@@ -53,20 +53,10 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of ScheduledBackup
+            description: ScheduledBackupSpec defines the desired state of a ScheduledBackup.
             properties:
               affinity:
-                description: |-
-                  affinity overrides the derived pod affinity. By default the backup pod is
-                  scheduled next to the data it reads: hard affinity to the app when a
-                  volume is attached, hard affinity to mariadb, or soft affinity to the
-                  CloudNativePG primary.
-
-                  The derived rules encode a fleet labelling convention: the app's pods are
-                  expected to carry app.kubernetes.io/name=<namespace> and
-                  app.kubernetes.io/controller=app, and mariadb's to carry
-                  app.kubernetes.io/name=mariadb. Set this field for anything labelled
-                  differently, or the backup pod will not schedule.
+                description: Affinity for the backup pod.
                 properties:
                   nodeAffinity:
                     description: Describes node affinity scheduling rules for the
@@ -978,41 +968,36 @@ spec:
                     type: object
                 type: object
               cache:
-                description: cache configures the restic cache volume.
+                description: Cache configures restic's cache volume.
                 properties:
                   accessMode:
                     default: ReadWriteMany
-                    description: accessMode for the cache PVC.
+                    description: AccessMode for the cache claim.
                     type: string
                   enabled:
-                    description: |-
-                      enabled turns the cache PVC on. Defaults to true. Setting it to false
-                      deletes a cache PVC the operator created.
+                    description: Enabled turns the cache volume on. Defaults to the
+                      operator's setting.
                     type: boolean
                   size:
                     default: 1Gi
-                    description: size of the cache PVC.
+                    description: Size of the cache claim.
                     type: string
                   storageClass:
-                    description: storageClass for the cache PVC.
+                    description: StorageClass for the cache claim. Defaults to the
+                      operator's setting.
                     type: string
                 type: object
               concurrencyPolicy:
                 default: Forbid
-                description: concurrencyPolicy for the generated CronJob.
+                description: ConcurrencyPolicy decides what happens when a run overlaps
+                  the previous one.
                 enum:
                 - Allow
                 - Forbid
                 - Replace
                 type: string
               containerSecurityContext:
-                description: |-
-                  containerSecurityContext replaces the backup container's security
-                  context. The default drops every capability and forbids privilege
-                  escalation, which restic never needs.
-
-                  Set it to add readOnlyRootFilesystem, which is left off by default
-                  because where the image and the dump tools write is their business.
+                description: ContainerSecurityContext for the backup container.
                 properties:
                   allowPrivilegeEscalation:
                     description: |-
@@ -1201,33 +1186,27 @@ spec:
                     type: object
                 type: object
               database:
-                description: database wires database credentials into the backup pod.
+                description: Database is the database to connect to. Required by database
+                  sources.
                 properties:
                   engine:
-                    description: engine selects the credential wiring.
+                    description: Engine is the database to connect to.
                     enum:
                     - cnpg
                     - mariadb
                     type: string
                   host:
-                    description: host sets DB_HOST. Required for mariadb, unused for
-                      cnpg.
+                    description: Host is the database host. Required for mariadb.
                     type: string
                   name:
-                    description: name sets DB_DATABASE. Required for mariadb, unused
-                      for cnpg.
+                    description: Name is the default database. Required for mariadb.
                     type: string
                   secretName:
-                    description: |-
-                      secretName is the Secret holding the credentials. Defaults to
-                      "postgresql-app" for cnpg and "mariadb" for mariadb.
-
-                      Whatever it is called, it is mounted at DBSecretMountPath, which the
-                      operator also passes to the dump and restore tools as --secret-mount.
+                    description: SecretName holds the credentials. Defaults to "postgresql-app"
+                      for cnpg and "mariadb" for mariadb.
                     type: string
                   user:
-                    description: user sets DB_USERNAME. Required for mariadb, unused
-                      for cnpg.
+                    description: User is the database user. Required for mariadb.
                     type: string
                 required:
                 - engine
@@ -1239,44 +1218,30 @@ spec:
               env:
                 additionalProperties:
                   type: string
-                description: |-
-                  env adds environment variables to the backup container. Intended as the
-                  companion to script; typed fields cover the common cases.
-
-                  Entries take precedence over everything the operator sets, including
-                  RESTIC_REPOSITORY and RESTIC_PASSWORD from the credentials Secret, since
-                  a container's env overrides its envFrom.
+                description: Env is extra environment variables for the backup container.
                 type: object
               failedJobsHistoryLimit:
                 default: 1
-                description: failedJobsHistoryLimit for the generated CronJob.
+                description: FailedJobsHistoryLimit is how many failed Jobs to keep.
                 format: int32
                 type: integer
               healthchecks:
-                description: healthchecks configures dead-man's-switch reporting.
+                description: Healthchecks configures Healthchecks.io pings.
                 properties:
                   apiURL:
-                    description: apiURL overrides the operator's healthchecks ping
-                      endpoint.
+                    description: APIURL overrides the Healthchecks endpoint.
                     type: string
                   create:
-                    description: |-
-                      create auto-provisions the check on first ping. Defaults to the
-                      operator's --healthchecks-auto-create setting.
+                    description: Create makes runitor create the check on first ping.
+                      Ignored when pinging by UUID.
                     type: boolean
                   enabled:
-                    description: |-
-                      enabled turns healthchecks reporting on for this backup. Defaults to the
-                      operator's --healthchecks-enabled setting.
+                    description: Enabled turns pinging on. Defaults to the operator's
+                      setting.
                     type: boolean
                   pingKeySecretRef:
-                    description: |-
-                      pingKeySecretRef points at a Secret in this namespace holding the ping
-                      key of the healthchecks project this backup reports to.
-
-                      There is deliberately no cluster-wide default: separate client projects
-                      have separate ping keys, and a shared one would file checks into the
-                      wrong project.
+                    description: PingKeySecretRef holds the project ping key. Used
+                      with slug.
                     properties:
                       key:
                         description: The key of the secret to select from.  Must be
@@ -1300,20 +1265,13 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                   slug:
-                    description: |-
-                      slug identifies the check within the project. Defaults to the namespace.
-
-                      Two backups in one namespace must therefore set distinct slugs; the
-                      operator reports SlugConflict otherwise, because sharing a check would
-                      let one backup's success mask the other's failure.
+                    description: Slug is the check slug to ping. Defaults to the namespace.
                     maxLength: 100
                     pattern: ^[a-z0-9_-]+$
                     type: string
                   uuidSecretRef:
-                    description: |-
-                      uuidSecretRef pings a check by UUID instead of by slug. This is the
-                      escape hatch for adopting a check that cannot be given a slug; prefer
-                      backfilling the slug so the ping path stays uniform.
+                    description: UUIDSecretRef holds a check UUID to ping directly,
+                      instead of slug and ping key.
                     properties:
                       key:
                         description: The key of the secret to select from.  Must be
@@ -1338,28 +1296,15 @@ spec:
                     x-kubernetes-map-type: atomic
                 type: object
               image:
-                description: |-
-                  image overrides the backup image. It must provide restic, runitor, ts
-                  and dumpdb. Defaults to the operator's --backup-image setting.
+                description: Image overrides the backup container image.
                 type: string
               podLabels:
                 additionalProperties:
                   type: string
-                description: |-
-                  podLabels adds labels to the backup pod, for network policies and the
-                  like. The mariadb-client label is added automatically for mariadb.
+                description: PodLabels to add to the backup pod.
                 type: object
               podSecurityContext:
-                description: |-
-                  podSecurityContext replaces the backup pod's security context, which by
-                  default sets only the RuntimeDefault seccomp profile.
-
-                  No user or group id is imposed by default, because the backup has to read
-                  the app's data and its ownership varies per app and per cluster; an
-                  fsGroup would also chown that data as a side effect. Set this to run as a
-                  particular user, or to satisfy a namespace enforcing the restricted Pod
-                  Security Standard. It replaces the default wholesale, so repeat anything
-                  you still want.
+                description: PodSecurityContext for the backup pod.
                 properties:
                   appArmorProfile:
                     description: |-
@@ -1588,8 +1533,8 @@ spec:
                     type: object
                 type: object
               repositoryRef:
-                description: repositoryRef names the Repository in this namespace
-                  to back up into.
+                description: RepositoryRef is the Repository in this namespace to
+                  back up into.
                 properties:
                   name:
                     default: ""
@@ -1603,7 +1548,7 @@ spec:
                 type: object
                 x-kubernetes-map-type: atomic
               resources:
-                description: resources for the backup container.
+                description: Resources for the backup container.
                 properties:
                   claims:
                     description: |-
@@ -1662,38 +1607,41 @@ spec:
                     type: object
                 type: object
               retention:
-                description: |-
-                  retention configures `restic forget --prune` after the backup. Omit to
-                  skip forgetting entirely.
+                description: Retention is how many snapshots to keep. Omit to never
+                  forget.
                 properties:
                   daily:
-                    description: daily keeps the last N daily snapshots.
+                    description: Daily keeps the last snapshot of each of the n most
+                      recent days.
                     format: int32
                     minimum: 1
                     type: integer
                   hourly:
-                    description: hourly keeps the last N hourly snapshots.
+                    description: Hourly keeps the last snapshot of each of the n most
+                      recent hours.
                     format: int32
                     minimum: 1
                     type: integer
                   last:
-                    description: last keeps the N most recent snapshots regardless
-                      of age.
+                    description: Last keeps the n most recent snapshots.
                     format: int32
                     minimum: 1
                     type: integer
                   monthly:
-                    description: monthly keeps the last N monthly snapshots.
+                    description: Monthly keeps the last snapshot of each of the n
+                      most recent months.
                     format: int32
                     minimum: 1
                     type: integer
                   weekly:
-                    description: weekly keeps the last N weekly snapshots.
+                    description: Weekly keeps the last snapshot of each of the n most
+                      recent weeks.
                     format: int32
                     minimum: 1
                     type: integer
                   yearly:
-                    description: yearly keeps the last N yearly snapshots.
+                    description: Yearly keeps the last snapshot of each of the n most
+                      recent years.
                     format: int32
                     minimum: 1
                     type: integer
@@ -1705,77 +1653,53 @@ spec:
                     || has(self.monthly) || has(self.yearly)
               retryLock:
                 default: 5m
-                description: |-
-                  retryLock is how long restic waits for the repository lock before giving
-                  up. Pruning takes an exclusive lock, so without this a backup that
-                  overlaps a prune fails outright rather than waiting its turn. That
-                  happens whenever two schedules share a repository, which is exactly the
-                  state an app is in while it is being migrated onto this operator.
-
-                  Set it to 0 to pass no flag at all, restoring restic's default of
-                  failing immediately.
+                description: RetryLock is how long restic waits for a lock held by
+                  another run.
                 type: string
                 x-kubernetes-validations:
                 - message: must be a Go duration such as 30m, 1h or 1h30m
                   rule: self == '0' || self.matches('^([0-9]+([.][0-9]+)?(ns|us|ms|s|m|h))+$')
               schedule:
-                description: |-
-                  schedule is either a standard five-field cron expression, used verbatim,
-                  or one of the shorthands "@hourly", "@daily" (or "@midnight"), "@weekly",
-                  "@monthly", "@yearly" (or "@annually"), "@every <duration>". Shorthands
-                  are jittered from a hash of this resource's identity so that copy-pasted
-                  backups do not stampede; the result is reported in
-                  status.effectiveSchedule.
+                description: Schedule is a cron expression, or a shorthand such as
+                  @daily or @every 6h.
                 type: string
               script:
-                description: |-
-                  script replaces the generated backup body wholesale. The operator still
-                  wraps it with runitor, timestamping and `set -eu`, and still injects the
-                  environment, mounts and retention-free defaults; everything between the
-                  preamble and `restic cache --cleanup` is yours. Mutually exclusive with
-                  sources.
+                description: Script is a shell script to run instead of sources. Mutually
+                  exclusive with sources.
                 type: string
               sources:
-                description: sources lists what to back up. Mutually exclusive with
-                  script.
+                description: Sources is what to back up. Mutually exclusive with script.
                 items:
-                  description: |-
-                    BackupSource is one thing to back up. Sources render, in order, into the
-                    backup script as individual `restic backup` invocations.
+                  description: BackupSource is one thing to back up on each run.
                   properties:
                     database:
-                      description: |-
-                        database names a specific database to dump instead of the default. Only
-                        valid for database sources.
+                      description: Database is the database name to dump. Database
+                        sources only.
                       type: string
                     exclude:
-                      description: exclude lists restic --exclude patterns. Only valid
-                        when type is "files".
+                      description: Exclude is a list of restic exclude patterns. Files
+                        sources only.
                       items:
                         type: string
                       type: array
                     extraArgs:
-                      description: |-
-                        extraArgs are appended verbatim to the dump command, after a `--`
-                        separator, for flags the dump tool passes through to the client. They are
-                        not quoted: this is a passthrough, so the caller owns the quoting.
+                      description: ExtraArgs is passed to the dump command. Database
+                        sources only.
                       items:
                         type: string
                       type: array
                     path:
-                      description: |-
-                        path is the file or directory to back up, relative to the working
-                        directory. Only valid when type is "files". Defaults to ".".
+                      description: Path is the directory to back up, relative to the
+                        volume mount. Files sources only.
                       type: string
                     tag:
-                      description: |-
-                        tag is the restic tag applied to snapshots from this source. Defaults to
-                        "db" for database sources and "files" for file sources.
+                      description: Tag is the restic tag for this source's snapshots.
+                        Defaults to "files" or "db".
                       maxLength: 64
                       pattern: ^[A-Za-z0-9_.-]+$
                       type: string
                     type:
-                      description: type selects what this source reads.
+                      description: Type is the kind of data this source backs up.
                       enum:
                       - cnpg
                       - mariadb
@@ -1793,35 +1717,34 @@ spec:
                 type: array
               successfulJobsHistoryLimit:
                 default: 3
-                description: successfulJobsHistoryLimit for the generated CronJob.
+                description: SuccessfulJobsHistoryLimit is how many completed Jobs
+                  to keep.
                 format: int32
                 type: integer
               suspend:
-                description: suspend pauses this backup. The CronJob is kept but suspended.
+                description: Suspend stops new backups without deleting the resource.
                 type: boolean
               timeZone:
                 default: America/Chicago
-                description: timeZone for the schedule and for the container's TZ.
+                description: TimeZone the schedule is interpreted in.
                 type: string
               volume:
-                description: volume attaches an existing claim to back up files from.
+                description: Volume is the PVC to mount. Required by files sources.
                 properties:
                   existingClaim:
-                    description: existingClaim is the name of a PVC in this namespace.
+                    description: ExistingClaim is the name of the PersistentVolumeClaim
+                      to mount.
                     type: string
                   mountPath:
-                    description: |-
-                      mountPath is where the claim is mounted, which is also the working
-                      directory for file sources. Defaults to "/<existingClaim>".
+                    description: MountPath is where to mount the claim. Defaults to
+                      /<existingClaim>.
                     type: string
                     x-kubernetes-validations:
                     - message: mountPath must not be /cache, which is where the restic
                         cache volume is mounted
                       rule: self != '/cache'
                   readOnly:
-                    description: |-
-                      readOnly mounts the claim read-only. Off by default because RWO claims
-                      shared with the app cannot always be remounted read-only.
+                    description: ReadOnly mounts the claim read-only.
                     type: boolean
                 required:
                 - existingClaim
@@ -1831,15 +1754,15 @@ spec:
             - schedule
             type: object
           status:
-            description: status defines the observed state of ScheduledBackup
+            description: ScheduledBackupStatus is the observed state of a ScheduledBackup.
             properties:
               active:
-                description: active is the number of currently running backup jobs.
+                description: Active is how many backups are running.
                 format: int32
                 type: integer
               conditions:
-                description: conditions represent the current state of the ScheduledBackup
-                  resource.
+                description: Conditions holds the latest observations of the backup's
+                  state.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -1899,42 +1822,34 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               effectiveSchedule:
-                description: |-
-                  effectiveSchedule is the cron expression actually given to the CronJob,
-                  after jitter is applied.
+                description: EffectiveSchedule is the cron expression the shorthand
+                  resolved to.
                 type: string
               history:
-                description: |-
-                  history is the most recent runs, newest first. Jobs are removed an hour
-                  after they finish and pruned by the history limits, so recording them
-                  here is the only durable record of whether backups have been working.
+                description: History is the most recent runs, newest first.
                 items:
-                  description: BackupRun is one recorded backup attempt.
+                  description: BackupRun is one entry in the run history.
                   properties:
                     completionTime:
-                      description: completionTime is when it finished, absent while
-                        it is still running.
+                      description: CompletionTime is when the run finished.
                       format: date-time
                       type: string
                     jobName:
-                      description: jobName is the Job that ran it. It may no longer
-                        exist.
+                      description: JobName is the Job that ran the backup.
                       type: string
                     result:
-                      description: |-
-                        result is the outcome. Running entries are updated in place as the run
-                        finishes.
+                      description: Result is how the run ended.
                       enum:
                       - Running
                       - Succeeded
                       - Failed
                       type: string
                     startTime:
-                      description: startTime is when the run's Job started.
+                      description: StartTime is when the run started.
                       format: date-time
                       type: string
                     trigger:
-                      description: trigger is what started the run.
+                      description: Trigger is what started the run.
                       enum:
                       - Scheduled
                       - Manual
@@ -1947,27 +1862,23 @@ spec:
                 type: array
                 x-kubernetes-list-type: atomic
               lastScheduleTime:
-                description: lastScheduleTime is when the CronJob last started a backup.
+                description: LastScheduleTime is when a backup was last started.
                 format: date-time
                 type: string
               lastSuccessfulTime:
-                description: lastSuccessfulTime is when a backup last completed successfully.
+                description: LastSuccessfulTime is when a backup last succeeded.
                 format: date-time
                 type: string
               lastTriggerJob:
-                description: |-
-                  lastTriggerJob is the Job created for the last honoured trigger, or empty
-                  if the trigger was skipped.
+                description: LastTriggerJob is the Job the last trigger created.
                 type: string
               lastTriggerTime:
-                description: |-
-                  lastTriggerTime is the trigger annotation the operator has already acted
-                  on. A trigger newer than this starts a run; re-reconciling the same one
-                  does not.
+                description: LastTriggerTime is the trigger-at annotation this operator
+                  has already acted on.
                 format: date-time
                 type: string
               observedGeneration:
-                description: observedGeneration is the .metadata.generation this status
+                description: ObservedGeneration is the spec generation this status
                   was computed from.
                 format: int64
                 type: integer

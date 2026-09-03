@@ -64,7 +64,6 @@ func TestSuspendRepository(t *testing.T) {
 	}
 }
 
-// Re-suspending must be a no-op rather than a pointless write.
 func TestSuspendIsIdempotent(t *testing.T) {
 	sb := readyBackup(testBackupName, testRepoName)
 	sb.Spec.Suspend = true

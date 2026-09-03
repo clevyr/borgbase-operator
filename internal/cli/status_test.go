@@ -52,7 +52,7 @@ func TestStatusBackup(t *testing.T) {
 			t.Errorf("expected %q in output:\n%s", want, out)
 		}
 	}
-	// Newest run first.
+
 	if strings.Index(out, "web-files-backup-2") > strings.Index(out, "web-files-backup-1") {
 		t.Errorf("runs are not newest-first:\n%s", out)
 	}
@@ -79,7 +79,6 @@ func TestStatusNoRuns(t *testing.T) {
 	}
 }
 
-// A dangling repositoryRef must not stop status from rendering.
 func TestStatusToleratesMissingRepository(t *testing.T) {
 	sb := readyBackup("orphan", "gone")
 	out := status(t, newClient(t, sb), "sb/orphan")
@@ -104,8 +103,6 @@ func TestRunResultAndDuration(t *testing.T) {
 		t.Errorf("runDuration(no start) = %q, want -", got)
 	}
 
-	// A failed Job with no completion time falls back to its failure condition
-	// rather than measuring up to now.
 	failed := jobOwnedBy("j", "u", "CronJob", 10*time.Hour)
 	failed.Status.Failed = 1
 	failed.Status.Conditions = []batchv1.JobCondition{{

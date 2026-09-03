@@ -1,35 +1,22 @@
-// Package borgbase is a minimal client for the BorgBase GraphQL API at
-// https://api.borgbase.com/graphql.
-//
-// Only the repository operations this operator needs are implemented. The
-// schema was taken from the API's own introspection endpoint, which is
-// reachable without authentication.
 package borgbase
 
 import "errors"
 
-// FormatRestic is the only repository format this operator manages. BorgBase
-// also serves borg repositories, but they are explicitly out of scope.
-//
-// repoAdd accepts `format` while repoEdit does not: a repository's format is
-// fixed at creation.
+// FormatRestic is the repository format the operator supports.
 const FormatRestic = "restic"
 
-// Errors returned by the client.
 var (
-	// ErrNotFound means the repository does not exist, or the token cannot see it.
+	// ErrNotFound means no such repository exists.
 	ErrNotFound = errors.New("borgbase: repository not found")
 
-	// ErrNotRestic means a repository exists but is not restic-format. Since
-	// format cannot be changed after creation, this is terminal.
+	// ErrNotRestic means the repository is a borg repository, not a restic one.
 	ErrNotRestic = errors.New("borgbase: repository is not restic format")
 
-	// ErrNoCredentials means the API returned a repository with no htpasswd,
-	// so no RESTIC_REPOSITORY URL can be built for it.
+	// ErrNoCredentials means BorgBase returned no REST password for the repository.
 	ErrNoCredentials = errors.New("borgbase: repository has no REST password")
 )
 
-// Repo mirrors the fields of BorgBase's RepoType that this operator reads.
+// Repo is a BorgBase repository.
 type Repo struct {
 	ID           string  `json:"id"`
 	Name         string  `json:"name"`
@@ -42,40 +29,34 @@ type Repo struct {
 	AppendOnly   bool    `json:"appendOnly"`
 	CurrentUsage float64 `json:"currentUsage"`
 
-	// Htpasswd is the REST-server password.
 	Htpasswd string `json:"htpasswd"`
 
 	Server Server `json:"server"`
 }
 
-// Server is BorgBase's ServerType.
+// Server is the host a Repo lives on.
 type Server struct {
 	Hostname string `json:"hostname"`
 	Region   string `json:"region"`
 }
 
-// IsRestic reports whether this is a restic-format repository.
+// IsRestic reports whether the repository is in restic format.
 func (r *Repo) IsRestic() bool { return r.Format == FormatRestic }
 
-// Password returns the REST-server password used in the repository URL.
+// Password returns the repository's REST password.
 func (r *Repo) Password() string { return r.Htpasswd }
 
 // Host returns the hostname serving this repository over REST.
 //
-// BorgBase serves each restic repository from a subdomain named after the
-// repository ID. This deliberately ignores Server.Hostname, which is the
-// physical box the repository is stored on (for example box-us00.borgbase.com)
-// and does not answer for the repository's REST endpoint. Every existing
-// repository in the fleet uses the <id>.repo.borgbase.com form.
+// BorgBase serves each restic repository from a subdomain named after its ID.
+// This ignores Server.Hostname on purpose: that is the physical box the
+// repository is stored on (box-us00.borgbase.com and the like) and does not
+// answer for the REST endpoint.
 func (r *Repo) Host() string {
 	return r.ID + ".repo.borgbase.com"
 }
 
-// ResticURL builds the RESTIC_REPOSITORY value for this repository, in the
-// form rest:https://<id>:<password>@<host>.
-//
-// The HTTP username is the repository ID, which is also its subdomain. Note
-// that the returned string contains a credential.
+// ResticURL returns the rest: URL restic uses to reach the repository.
 func (r *Repo) ResticURL() (string, error) {
 	if !r.IsRestic() {
 		return "", ErrNotRestic
@@ -87,7 +68,7 @@ func (r *Repo) ResticURL() (string, error) {
 	return "rest:https://" + r.ID + ":" + pass + "@" + r.Host(), nil
 }
 
-// AddOptions are the arguments to repoAdd.
+// AddOptions are the settings for creating a repository.
 type AddOptions struct {
 	Name       string
 	Region     string
@@ -96,11 +77,7 @@ type AddOptions struct {
 	AppendOnly bool
 }
 
-// EditOptions are the arguments to repoEdit. Note the absence of Format.
-//
-// Every field is a pointer so that "leave this alone" is expressible: repoEdit
-// applies whatever it is sent, so a zero value would silently clear a setting
-// the spec says nothing about.
+// EditOptions are the settings to change on an existing repository. Nil fields are left alone.
 type EditOptions struct {
 	Quota        *int64
 	QuotaEnabled *bool
@@ -108,8 +85,7 @@ type EditOptions struct {
 	AppendOnly   *bool
 }
 
-// IsZero reports whether these options would change nothing, so the caller can
-// skip the API round trip entirely.
+// IsZero reports whether there is nothing to change.
 func (o EditOptions) IsZero() bool {
 	return o.Quota == nil && o.QuotaEnabled == nil && o.AlertDays == nil && o.AppendOnly == nil
 }

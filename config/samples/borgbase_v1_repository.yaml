@@ -1,9 +1,3 @@
-# Adopting an existing BorgBase repository during migration.
-#
-# The repository ID comes out of the current RESTIC_REPOSITORY value, and the
-# password is seeded from the existing SOPS secret. The operator looks the
-# repository up and never creates one, so a mistyped ID fails loudly instead of
-# provisioning an empty repo beside the real backups.
 apiVersion: borgbase.clevyr.com/v1
 kind: Repository
 metadata:
@@ -15,11 +9,6 @@ spec:
     name: restic-envs
     key: RESTIC_PASSWORD
 ---
-# A brand new repository.
-#
-# The operator creates it in BorgBase, generates the restic password once, and
-# writes both into the Secret named in status.secretName. deletionPolicy
-# defaults to Retain, so deleting this resource never destroys the backups.
 apiVersion: borgbase.clevyr.com/v1
 kind: Repository
 metadata:

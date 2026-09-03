@@ -20,7 +20,7 @@ import (
 	"github.com/clevyr/borgbase-operator/internal/controller"
 )
 
-// ErrUnhealthy is returned when any check fails, so doctor is usable in scripts.
+// ErrUnhealthy means at least one doctor check failed.
 var ErrUnhealthy = errors.New("one or more checks failed")
 
 type checkLevel int
@@ -187,8 +187,6 @@ func checkRepository(ctx context.Context, c client.Client, repo *borgbasev1.Repo
 	checkGeneration(r, repo.Generation, repo.Status.ObservedGeneration)
 	checkCondition(r, repo.Status.Conditions, borgbasev1.RepositoryConditionReady, "repository")
 
-	// A conflicted Repository is held back before it touches anything, so every
-	// check below would only restate the same cause in a different voice.
 	if cond := FindCondition(repo.Status.Conditions, borgbasev1.RepositoryConditionReady); cond != nil &&
 		cond.Reason == "RepositoryConflict" {
 		return r
@@ -256,9 +254,6 @@ func checkReferencedRepository(ctx context.Context, c client.Client, repo *borgb
 	checkCredentialsSecret(ctx, c, repo, r)
 }
 
-// checkCredentialsSecret verifies the Secret the backup pod loads with envFrom.
-// A missing key produces a container that starts and then fails to reach the
-// repository, which is a confusing failure to debug from logs alone.
 func checkCredentialsSecret(ctx context.Context, c client.Client, repo *borgbasev1.Repository, r *report) {
 	name := repo.SecretName()
 
@@ -287,9 +282,6 @@ func checkCredentialsSecret(ctx context.Context, c client.Client, repo *borgbase
 	r.add(levelOK, fmt.Sprintf("credentials Secret %q has both keys", name))
 }
 
-// checkCronJob catches the migration failure the operator refuses to work
-// around: a CronJob of the same name owned by something else, usually a
-// leftover Flux HelmRelease.
 func checkCronJob(ctx context.Context, c client.Client, sb *borgbasev1.ScheduledBackup, r *report) {
 	name := backup.CronJobName(sb)
 
@@ -346,8 +338,6 @@ func checkCachePVC(ctx context.Context, c client.Client, sb *borgbasev1.Schedule
 	}
 }
 
-// checkLastRun compares the last scheduled start against the last success, so a
-// run that started and failed is reported as a failure rather than as silence.
 func checkLastRun(sb *borgbasev1.ScheduledBackup, r *report) {
 	st := sb.Status
 
@@ -356,8 +346,6 @@ func checkLastRun(sb *borgbasev1.ScheduledBackup, r *report) {
 		return
 	}
 
-	// History records manual runs too, which never set lastScheduleTime; without
-	// it a backup that has run several times reads as one that never has.
 	if len(st.History) > 0 {
 		checkRecordedRuns(st.History, r, sb.Name)
 		return
@@ -365,9 +353,7 @@ func checkLastRun(sb *borgbasev1.ScheduledBackup, r *report) {
 
 	switch {
 	case st.LastScheduleTime == nil:
-		// A backup that has never fired is not a missed one. After a migration
-		// the operator re-jitters the schedule, so the first run waits for the
-		// next slot -- up to a day away for a daily backup.
+
 		r.add(levelWarn, "no backup has run yet",
 			"The first run happens at the next scheduled slot.",
 			"To take one now: corg backup "+sb.Name)
@@ -406,8 +392,6 @@ func checkCondition(r *report, conds []metav1.Condition, condType, noun string) 
 	}
 }
 
-// describeInitJobs reports why initialization has not finished, using the Jobs
-// the Repository owns rather than guessing their names.
 func describeInitJobs(ctx context.Context, c client.Client, repo *borgbasev1.Repository, r *report) {
 	var jobs batchv1.JobList
 	if err := c.List(ctx, &jobs, client.InNamespace(repo.Namespace)); err != nil {
@@ -437,7 +421,6 @@ func describeInitJobs(ctx context.Context, c client.Client, repo *borgbasev1.Rep
 	r.add(levelInfo, "no init Job exists yet")
 }
 
-// checkRecordedRuns reports the most recent run from status.history.
 func checkRecordedRuns(history []borgbasev1.BackupRun, r *report, name string) {
 	last := history[0]
 	when := Since(last.CompletionTime)

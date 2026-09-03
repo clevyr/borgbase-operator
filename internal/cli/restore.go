@@ -13,6 +13,7 @@ import (
 	borgbasev1 "github.com/clevyr/borgbase-operator/api/v1"
 )
 
+// Errors returned by the restore command.
 var (
 	ErrNoTarget       = errors.New("no restore target specified")
 	ErrNotConfirmed   = errors.New("not confirmed")
@@ -21,7 +22,6 @@ var (
 	ErrNoSourceVolume = errors.New("this backup has no source volume")
 )
 
-// restoreMountPath is where a scratch claim is mounted for inspection.
 const restoreMountPath = "/restore"
 
 type restoreOptions struct {
@@ -41,8 +41,6 @@ type restoreOptions struct {
 	yes     bool
 }
 
-// targets returns the flags that were set, so an ambiguous request is refused
-// rather than silently preferring one.
 func (o *restoreOptions) targets() []string {
 	var set []string
 	if o.inPlace {
@@ -139,7 +137,6 @@ func runRestore(
 	}
 }
 
-// availableTargets lists only what this backup can actually restore to.
 func availableTargets(sb *borgbasev1.ScheduledBackup) []string {
 	targets := []string{"--to DIR (download to this machine)"}
 	if sb.Spec.Volume != nil {
@@ -153,8 +150,6 @@ func availableTargets(sb *borgbasev1.ScheduledBackup) []string {
 	return targets
 }
 
-// chooseTarget asks when there is a terminal, and refuses otherwise. A script
-// must never restore somewhere it did not name.
 func chooseTarget(f *Factory, sb *borgbasev1.ScheduledBackup, o *restoreOptions) error {
 	targets := availableTargets(sb)
 
@@ -204,11 +199,6 @@ func chooseTarget(f *Factory, sb *borgbasev1.ScheduledBackup, o *restoreOptions)
 	return nil
 }
 
-// confirm requires the resource name to be typed before overwriting live data.
-//
-// Without a terminal there is nobody to ask, so it refuses rather than
-// proceeding. The error names --yes, because "not confirmed" on a machine that
-// was never prompted is a confusing thing to read in CI.
 func confirm(f *Factory, skip bool, what, name string) error {
 	if skip {
 		return nil
@@ -236,7 +226,6 @@ func confirm(f *Factory, skip bool, what, name string) error {
 	return nil
 }
 
-// resticRestoreArgs is the shared argv for restoring files to a path.
 func (o *restoreOptions) resticRestoreArgs(target string) []string {
 	argv := []string{"restore", o.snapshot, "--target=" + target}
 	if o.path != "" {

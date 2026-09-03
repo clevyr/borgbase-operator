@@ -58,8 +58,6 @@ func TestMergeHistoryOrdersNewestFirst(t *testing.T) {
 	}
 }
 
-// The whole point: Jobs are removed an hour after they finish, so a run that
-// has been garbage collected must survive in history.
 func TestMergeHistoryKeepsCollectedRuns(t *testing.T) {
 	existing := []borgbasev1.BackupRun{
 		run("gone-2", 200, borgbasev1.BackupRunSucceeded),
@@ -73,7 +71,6 @@ func TestMergeHistoryKeepsCollectedRuns(t *testing.T) {
 	}
 }
 
-// An entry recorded while a run was in flight is updated, not duplicated.
 func TestMergeHistoryUpdatesRunningEntryInPlace(t *testing.T) {
 	existing := []borgbasev1.BackupRun{run("job-1", 10, borgbasev1.BackupRunRunning)}
 	got := mergeHistory(existing, observe(run("job-1", 10, borgbasev1.BackupRunSucceeded)))
@@ -99,7 +96,7 @@ func TestMergeHistoryIsBounded(t *testing.T) {
 	if len(got) != historyLimit {
 		t.Fatalf("history length = %d, want %d", len(got), historyLimit)
 	}
-	// Truncation must drop the oldest, not the newest.
+
 	if got[0].JobName != "job-00" {
 		t.Errorf("newest entry = %q, want job-00", got[0].JobName)
 	}
@@ -142,7 +139,6 @@ func TestRunFromJobClassifies(t *testing.T) {
 	}
 }
 
-// A Job that has not been scheduled yet has no startTime.
 func TestRunFromJobFallsBackToCreationTime(t *testing.T) {
 	created := metav1.NewTime(time.Now().Add(-time.Minute))
 	job := &batchv1.Job{Name: "j", CreationTimestamp: created}
@@ -153,12 +149,10 @@ func TestRunFromJobFallsBackToCreationTime(t *testing.T) {
 	}
 }
 
-// End to end: a triggered run shows up in status.history.
 func TestHistoryRecordsATriggeredRun(t *testing.T) {
 	r, c := backupHarness(t, initializedRepo(), triggeredBackup(triggerAt, nil))
 	reconcileBackup(t, r)
 
-	// The Job exists now; a second pass folds it into history.
 	jobs := manualJobs(t, c)
 	if len(jobs) != 1 {
 		t.Fatalf("expected 1 manual Job, got %d", len(jobs))
@@ -186,7 +180,6 @@ func TestHistoryRecordsATriggeredRun(t *testing.T) {
 	}
 }
 
-// Unrelated Jobs in the same namespace must not appear in history.
 func TestHistoryIgnoresForeignJobs(t *testing.T) {
 	r, c := backupHarness(t, initializedRepo(), scheduledBackup())
 	stranger := &batchv1.Job{

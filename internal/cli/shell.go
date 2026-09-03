@@ -82,9 +82,6 @@ func openShell(
 	interactive := ok && kube.IsTerminal(stdin.Fd())
 
 	return run.Attach(ctx, sb, opts, defaultResticTimeout, func(pod *corev1.Pod) error {
-		// Announced only once there is actually a pod. Saying so before the
-		// Job is built claims something that has not happened yet, and reads
-		// as a contradiction when the build then fails.
 		p := newPrinter(f.Streams.ErrOut)
 		p.printf("connected to pod/%s\n", pod.Name)
 		if err := p.Err(); err != nil {
@@ -102,15 +99,12 @@ func openShell(
 				Stderr:    f.Streams.ErrOut,
 				TTY:       interactive,
 				SizeQueue: sizeQueueFor(interactive, stdin),
-				// Keepalives truncate long streams, and a shell session is
-				// open-ended by definition.
+
 				DisablePing: true,
 			})
 		}
 
 		if !interactive {
-			// Without a TTY the remote side must not be told there is one, or
-			// it will emit escape sequences into a pipe.
 			return exec()
 		}
 		return kube.WithRawTerminal(stdin.Fd(), exec)

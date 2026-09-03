@@ -86,14 +86,12 @@ func TestBuildCronJobBasics(t *testing.T) {
 	if got := ptr.Deref(cj.Spec.TimeZone, ""); got != "America/Chicago" {
 		t.Errorf("timeZone = %q", got)
 	}
-	// The credentials come from the Repository's Secret, whole, so restic picks
-	// RESTIC_REPOSITORY and RESTIC_PASSWORD straight out of the environment.
+
 	c := cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0]
 	if c.EnvFrom[0].SecretRef.Name != "restic-borgbase" {
 		t.Errorf("envFrom secret = %q", c.EnvFrom[0].SecretRef.Name)
 	}
-	// A failed backup should wait for its next slot rather than retrying
-	// against a repository the failed attempt may have left locked.
+
 	if got := ptr.Deref(cj.Spec.JobTemplate.Spec.BackoffLimit, -1); got != 0 {
 		t.Errorf("backoffLimit = %d, want 0", got)
 	}
@@ -103,8 +101,6 @@ func TestBuildCronJobBasics(t *testing.T) {
 	}
 }
 
-// The cache volume must land on the path the image already points
-// RESTIC_CACHE_DIR at, or the cache silently does nothing.
 func TestCacheMountsWhereTheImageExpects(t *testing.T) {
 	c := containerOf(t, testBackup(nil), testConfig())
 	var found bool
@@ -181,7 +177,7 @@ func TestMariaDBWiring(t *testing.T) {
 			t.Errorf("%s = %v, want %q", name, env, want)
 		}
 	}
-	// MariaDB network policies select clients by this label.
+
 	if cj.Spec.JobTemplate.Spec.Template.Labels["mariadb-client"] != "true" {
 		t.Error("missing the mariadb-client pod label")
 	}
@@ -192,8 +188,6 @@ func TestMariaDBWiring(t *testing.T) {
 	}
 }
 
-// Missing connection details would produce a backup that fails at run time
-// rather than at apply time.
 func TestMariaDBWithoutConnectionDetailsIsAnError(t *testing.T) {
 	sb := testBackup(func(s *borgbasev1.ScheduledBackup) {
 		s.Spec.Database = &borgbasev1.DatabaseSpec{Engine: borgbasev1.DatabaseEngineMariaDB}
@@ -216,7 +210,7 @@ func TestCNPGUsesSoftAffinityAndNoDBEnv(t *testing.T) {
 		t.Error("cnpg reads its credentials from the mounted secret, not DB_* env")
 	}
 	aff := cj.Spec.JobTemplate.Spec.Template.Spec.Affinity
-	// Soft, so a failover cannot leave the backup unschedulable.
+
 	if aff == nil || aff.PodAffinity == nil ||
 		len(aff.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution) != 1 {
 		t.Fatal("expected soft pod affinity to the cnpg primary")
@@ -226,8 +220,6 @@ func TestCNPGUsesSoftAffinityAndNoDBEnv(t *testing.T) {
 	}
 }
 
-// A ReadWriteOnce claim can only be mounted where the app already has it, so
-// an attached volume must win over the database's softer preference.
 func TestVolumeAffinityWinsOverDatabase(t *testing.T) {
 	sb := testBackup(func(s *borgbasev1.ScheduledBackup) {
 		s.Spec.Database = &borgbasev1.DatabaseSpec{Engine: borgbasev1.DatabaseEngineCNPG}
@@ -261,8 +253,6 @@ func TestSpecImageOverridesConfig(t *testing.T) {
 	}
 }
 
-// Env is rendered from a map, so it must be sorted or every reconcile would
-// see a spurious diff and rewrite the CronJob.
 func TestUserEnvIsSorted(t *testing.T) {
 	sb := testBackup(func(s *borgbasev1.ScheduledBackup) {
 		s.Spec.Env = map[string]string{"ZED": "1", "ALPHA": "2", "MIKE": "3"}
@@ -281,13 +271,6 @@ func TestUserEnvIsSorted(t *testing.T) {
 	}
 }
 
-// Mounting at a path derived from the Secret name, as this once did, left a
-// custom secretName's credentials somewhere the dump never looked: the backup
-// failed at run time with nothing wrong at apply time.
-// The Secret must be mounted where the dump tool is told to look, whatever the
-// Secret is called and whatever that tool would have defaulted to on its own.
-// Asserting the two agree is the point: a fixed path checked against a literal
-// would pass even if the rendered command pointed somewhere else.
 func TestDatabaseSecretMountsWhereTheDumpToolIsTold(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -330,7 +313,6 @@ func TestDatabaseSecretMountsWhereTheDumpToolIsTold(t *testing.T) {
 				t.Fatal("no db-credentials mount")
 			}
 
-			// The rendered command must name the very path it is mounted at.
 			script := strings.Join(spec.Containers[0].Command, " ")
 			want := "--secret-mount=" + mount.MountPath
 			if !strings.Contains(script, want) {
@@ -338,7 +320,6 @@ func TestDatabaseSecretMountsWhereTheDumpToolIsTold(t *testing.T) {
 					mount.MountPath, want, script)
 			}
 
-			// The volume still refers to whatever Secret was asked for.
 			var volume *corev1.Volume
 			for i := range spec.Volumes {
 				if spec.Volumes[i].Name == "db-credentials" {
@@ -359,10 +340,6 @@ func TestDatabaseSecretMountsWhereTheDumpToolIsTold(t *testing.T) {
 	}
 }
 
-// Capabilities and privilege escalation are locked down unconditionally, since
-// restic needs neither. What is deliberately absent matters as much: pinning a
-// user or group id would break reading the app's data, and an fsGroup would
-// chown it.
 func TestBackupPodSecurityDefaults(t *testing.T) {
 	cj, err := BuildCronJob(testBackup(nil), testRepo(), testConfig())
 	if err != nil {
@@ -370,7 +347,6 @@ func TestBackupPodSecurityDefaults(t *testing.T) {
 	}
 	spec := cj.Spec.JobTemplate.Spec.Template.Spec
 
-	// The backup talks to restic and the database, never to the API server.
 	if automount := spec.AutomountServiceAccountToken; automount == nil || *automount {
 		t.Error("backup pod should not mount a service account token")
 	}
@@ -399,14 +375,12 @@ func TestBackupPodSecurityDefaults(t *testing.T) {
 	if container.AllowPrivilegeEscalation == nil || *container.AllowPrivilegeEscalation {
 		t.Error("privilege escalation should be forbidden")
 	}
-	// Opt-in: the image decides where it writes.
+
 	if container.ReadOnlyRootFilesystem != nil && *container.ReadOnlyRootFilesystem {
 		t.Error("read-only root filesystem should be opt-in, not the default")
 	}
 }
 
-// Data owned by a specific user needs a context the operator cannot guess, so
-// the default is replaceable.
 func TestPodSecurityContextOverride(t *testing.T) {
 	sb := testBackup(func(s *borgbasev1.ScheduledBackup) {
 		s.Spec.PodSecurityContext = &corev1.PodSecurityContext{
@@ -428,7 +402,6 @@ func TestPodSecurityContextOverride(t *testing.T) {
 	}
 }
 
-// Locking the container down further is opt-in.
 func TestContainerSecurityContextOverride(t *testing.T) {
 	sb := testBackup(func(s *borgbasev1.ScheduledBackup) {
 		s.Spec.ContainerSecurityContext = &corev1.SecurityContext{

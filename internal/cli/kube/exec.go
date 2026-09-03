@@ -1,5 +1,4 @@
-// Package kube holds thin Kubernetes helpers used by the corg CLI that are not
-// available from the controller-runtime client the operator uses.
+// Package kube wraps the client-go plumbing for exec-ing into a pod.
 package kube
 
 import (
@@ -18,12 +17,12 @@ import (
 	"k8s.io/streaming/pkg/httpstream/spdy"
 )
 
-// defaultPingPeriod matches the SPDY round tripper's usual keepalive.
 const defaultPingPeriod = 5 * time.Second
 
+// ErrNoRESTConfig means no usable client config was found.
 var ErrNoRESTConfig = errors.New("no REST client config")
 
-// ExecOptions describes a single exec into a running container.
+// ExecOptions are the settings for Exec.
 type ExecOptions struct {
 	Namespace string
 	Pod       string
@@ -33,19 +32,13 @@ type ExecOptions struct {
 	Stdin          io.Reader
 	Stdout, Stderr io.Writer
 
-	// TTY and SizeQueue drive an interactive session. SizeQueue may be nil.
 	TTY       bool
 	SizeQueue remotecommand.TerminalSizeQueue
 
-	// DisablePing turns off SPDY keepalives. It must be set for long streams
-	// such as a restic dump or a tar of a restored tree; see Exec.
 	DisablePing bool
 }
 
-// Exec runs a command in an existing container and streams it to the caller.
-//
-// Adapted from github.com/clevyr/kubedb (internal/kubernetes/pod.go), whose
-// exec path already solved the streaming problems this CLI hits.
+// Exec runs a command in a running container and streams its I/O.
 func Exec(ctx context.Context, cfg *rest.Config, cs kubernetes.Interface, opts ExecOptions) error {
 	if cfg == nil {
 		return ErrNoRESTConfig
@@ -75,9 +68,6 @@ func Exec(ctx context.Context, cfg *rest.Config, cs kubernetes.Interface, opts E
 		proxy = cfg.Proxy
 	}
 
-	// A nonzero ping period truncates long streams with an unexpected EOF, so
-	// anything that pipes a dump or a tar has to turn keepalives off.
-	// See https://github.com/kubernetes/kubernetes/issues/60140
 	pingPeriod := defaultPingPeriod
 	if opts.DisablePing {
 		pingPeriod = 0

@@ -1,10 +1,5 @@
 //go:build envtest
 
-// These tests run against a real API server, because the validation they cover
-// lives in the CRD rather than in Go. A CEL rule that does not compile, or that
-// quietly never fires, is invisible to every other test in this repo.
-//
-// Run with: make test-crd
 package controller
 
 import (
@@ -31,8 +26,7 @@ func startEnv(t *testing.T) client.Client {
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
 		ErrorIfCRDPathMissing: true,
 	}
-	// Installing the CRDs at all is the first assertion: the API server
-	// compiles every CEL rule as it accepts them.
+
 	cfg, err := env.Start()
 	if err != nil {
 		t.Fatalf("starting envtest (CRDs may have an invalid CEL rule): %v", err)
@@ -53,8 +47,6 @@ func mustCreateNamespace(t *testing.T, c client.Client, name string) {
 	}
 }
 
-// A duration the Go client cannot parse breaks decoding of every object of
-// that kind at once, so the API server has to reject it on the way in.
 func TestCRDRejectsUnparseableDurations(t *testing.T) {
 	c := startEnv(t)
 	mustCreateNamespace(t, c, "durations")
@@ -74,8 +66,6 @@ func TestCRDRejectsUnparseableDurations(t *testing.T) {
 	}
 
 	for i, tt := range tests {
-		// Built unstructured so that values the typed struct cannot express
-		// reach the API server exactly as a user would write them.
 		obj := repositoryWithRawInterval(fmt.Sprintf("dur-%d", i), "durations", tt.value)
 		err := c.Create(context.Background(), obj)
 		if tt.wantErr && err == nil {
@@ -87,9 +77,6 @@ func TestCRDRejectsUnparseableDurations(t *testing.T) {
 	}
 }
 
-// Repointing a Repository at another BorgBase repo orphans the snapshots the
-// first one holds. The field-level rule this replaces did not fire when the
-// field was absent on either side, so it could be added or removed freely.
 func TestCRDExistingRepositoryIDIsImmutable(t *testing.T) {
 	c := startEnv(t)
 	ctx := context.Background()
@@ -153,8 +140,6 @@ func TestCRDExistingRepositoryIDIsImmutable(t *testing.T) {
 	})
 }
 
-// The seed Secret is the off-cluster copy of the encryption key, and the
-// operator promises never to write to it.
 func TestCRDRejectsSecretNameEqualToSeed(t *testing.T) {
 	c := startEnv(t)
 	mustCreateNamespace(t, c, "seed")
@@ -200,8 +185,6 @@ func TestCRDScheduledBackupValidation(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			// Without a volume the working directory is the container's own
-			// root, so the backup succeeds and saves nothing useful.
 			name: "files source without a volume",
 			mutate: func(s *borgbasev1.ScheduledBackup) {
 				s.Spec.Sources = []borgbasev1.BackupSource{{Type: borgbasev1.SourceTypeFiles}}
@@ -226,8 +209,6 @@ func TestCRDScheduledBackupValidation(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			// An empty retention block renders no flags at all, so `restic
-			// forget` would silently never run.
 			name:    "retention with nothing set",
 			mutate:  func(s *borgbasev1.ScheduledBackup) { s.Spec.Retention = &borgbasev1.Retention{} },
 			wantErr: true,
@@ -306,8 +287,6 @@ func TestCRDScheduledBackupValidation(t *testing.T) {
 	}
 }
 
-// repositoryWithRawInterval builds a Repository carrying an arbitrary string in
-// spec.interval, which the typed struct cannot express.
 func repositoryWithRawInterval(name, namespace, interval string) client.Object {
 	obj := &unstructured.Unstructured{}
 	obj.SetUnstructuredContent(map[string]any{
@@ -324,8 +303,6 @@ func repositoryWithRawInterval(name, namespace, interval string) client.Object {
 	return obj
 }
 
-// The samples are what someone copies to get started, so they have to satisfy
-// the validation the CRDs actually ship with.
 func TestCRDSamplesAreValid(t *testing.T) {
 	c := startEnv(t)
 	ctx := context.Background()

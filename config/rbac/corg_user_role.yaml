@@ -1,11 +1,3 @@
-# Permissions for people running the corg CLI.
-#
-# The manager's own role does not cover this: it never reads pods, never execs,
-# and cannot delete a PersistentVolumeClaim. corg runs as the user, so it needs
-# its own grant.
-#
-# Bind corg-operator to someone who runs backups and restores, or corg-viewer
-# to someone who should only be able to look.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -39,7 +31,6 @@ rules:
       - get
       - list
       - watch
-  # corg logs, and finding the pod of a run.
   - apiGroups:
       - ""
     resources:
@@ -51,7 +42,6 @@ rules:
       - list
       - watch
 ---
-# Everything the viewer can do, plus the ability to run backups and restores.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -60,8 +50,6 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: corg-operator
 rules:
-  # Triggering a backup and suspending a schedule are annotation and spec
-  # patches; reinit patches status.
   - apiGroups:
       - borgbase.clevyr.com
     resources:
@@ -90,7 +78,6 @@ rules:
       - get
       - list
       - watch
-  # corg cancel deletes a running Job; the ephemeral runner creates its own.
   - apiGroups:
       - batch
     resources:
@@ -110,15 +97,12 @@ rules:
       - get
       - list
       - watch
-  # corg shell and the streaming restore both exec into the runner's pod.
   - apiGroups:
       - ""
     resources:
       - pods/exec
     verbs:
       - create
-  # corg restore --to-new-pvc creates a staging claim; delete lets it be
-  # cleaned up afterwards.
   - apiGroups:
       - ""
     resources:
@@ -129,9 +113,6 @@ rules:
       - watch
       - create
       - delete
-  # RESTIC_REPOSITORY and RESTIC_PASSWORD, read by corg env and written by
-  # corg rotate-password. This is the repository's encryption key: bind
-  # corg-operator only to people who should hold it.
   - apiGroups:
       - ""
     resources:

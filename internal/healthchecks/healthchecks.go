@@ -1,9 +1,4 @@
-// Package healthchecks wires dead-man's-switch reporting into a command.
-//
-// It contains no healthchecks API client. runitor does the work: it pings
-// <apiURL>/<pingKey>/<slug>?create=1 around the wrapped command, and
-// healthchecks auto-provisions the check on the first ping, attaching the
-// project's notification channels.
+// Package healthchecks wires backup runs up to Healthchecks.io via runitor.
 package healthchecks
 
 import (
@@ -12,34 +7,27 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// Environment variables runitor reads.
 const (
-	EnvAPIURL  = "HC_API_URL"
-	EnvSlug    = "CHECK_SLUG"
+	// EnvAPIURL is the runitor variable holding the Healthchecks endpoint.
+	EnvAPIURL = "HC_API_URL"
+	// EnvSlug is the runitor variable holding the check slug.
+	EnvSlug = "CHECK_SLUG"
+	// EnvPingKey is the runitor variable holding the project ping key.
 	EnvPingKey = "PING_KEY"
-	EnvUUID    = "CHECK_UUID"
+	// EnvUUID is the runitor variable holding a check UUID.
+	EnvUUID = "CHECK_UUID"
 )
 
-// Config is the operator-level configuration, applied to every job unless
-// overridden.
-//
-// Note that there is no ping key here. Ping keys are per healthchecks project,
-// and projects are per client, so a cluster-wide key would file checks into the
-// wrong project. It is always supplied per resource.
+// Config is the operator-wide Healthchecks configuration.
 type Config struct {
-	// Enabled turns reporting on by default.
 	Enabled bool
 
-	// APIURL is the ping endpoint, for example
-	// http://healthchecks.healthchecks:8000/ping.
 	APIURL string
 
-	// AutoCreate provisions a check on its first ping.
 	AutoCreate bool
 }
 
-// Overrides are the per-resource settings. A nil pointer or empty string means
-// "inherit from Config".
+// Overrides are the per-ScheduledBackup settings that take precedence over Config.
 type Overrides struct {
 	Enabled    *bool
 	Create     *bool
@@ -49,7 +37,7 @@ type Overrides struct {
 	UUIDRef    *corev1.SecretKeySelector
 }
 
-// Reporter is a fully resolved configuration, ready to render.
+// Reporter is a resolved Healthchecks configuration for one backup.
 type Reporter struct {
 	enabled    bool
 	create     bool
@@ -59,10 +47,7 @@ type Reporter struct {
 	uuidRef    *corev1.SecretKeySelector
 }
 
-// Resolve applies overrides on top of the operator configuration.
-//
-// defaultSlug is used when no slug is given; callers normally pass the
-// namespace, which is unique within a healthchecks project.
+// Resolve merges Overrides onto Config to produce a Reporter.
 func Resolve(cfg Config, o Overrides, defaultSlug string) Reporter {
 	r := Reporter{
 		enabled:    cfg.Enabled,
@@ -87,28 +72,22 @@ func Resolve(cfg Config, o Overrides, defaultSlug string) Reporter {
 	return r
 }
 
-// Enabled reports whether this job pings healthchecks at all.
+// Enabled reports whether runs should be pinged.
 func (r Reporter) Enabled() bool { return r.enabled }
 
-// Slug returns the check slug this job reports to.
+// Slug returns the check slug to ping.
 func (r Reporter) Slug() string { return r.slug }
 
-// PingsByUUID reports whether this job pings a check by UUID rather than by
-// slug. That is the adoption path for a check that cannot be given a slug, and
-// it is exported because a UUID ping is addressed to one specific check, so it
-// cannot collide with another backup's slug.
+// PingsByUUID reports whether the check is addressed by UUID rather than slug.
 func (r Reporter) PingsByUUID() bool { return r.uuidRef != nil }
 
-// Wrap returns cmd wrapped in runitor, so that healthchecks sees a start ping,
-// the exit status, and the captured output. A disabled Reporter returns cmd
-// unchanged.
+// Wrap prefixes cmd with runitor so the run is pinged. Returns cmd unchanged when disabled.
 func (r Reporter) Wrap(cmd []string) []string {
 	if !r.enabled {
 		return cmd
 	}
 	out := []string{"runitor"}
-	// -create only means anything for slug pings. runitor reads the slug and
-	// ping key from the environment, so no other flag is needed.
+
 	if r.create && !r.PingsByUUID() {
 		out = append(out, "-create")
 	}
@@ -116,7 +95,7 @@ func (r Reporter) Wrap(cmd []string) []string {
 	return append(out, cmd...)
 }
 
-// Env returns the environment runitor needs, or nil when disabled.
+// Env returns the environment variables runitor needs.
 func (r Reporter) Env() ([]corev1.EnvVar, error) {
 	if !r.enabled {
 		return nil, nil

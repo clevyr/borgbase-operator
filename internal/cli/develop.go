@@ -16,10 +16,9 @@ import (
 	"github.com/clevyr/borgbase-operator/internal/backup"
 )
 
-// defaultTimeZone is the CRD's default, and therefore what an omitted
-// spec.timeZone resolves to.
 const defaultTimeZone = "America/Chicago"
 
+// Errors returned by the develop command.
 var (
 	ErrNoScheduledBackup = errors.New("no ScheduledBackup found")
 	ErrParityDiffers     = errors.New("the generated backup differs from the original")
@@ -50,8 +49,6 @@ both "what would this change do" and "what is this actually running".`,
 	return cmd
 }
 
-// loadScheduledBackup accepts a path or a cluster resource, preferring a file
-// when one exists at that name.
 func loadScheduledBackup(
 	ctx context.Context, f *Factory, arg string,
 ) (*borgbasev1.ScheduledBackup, error) {
@@ -77,8 +74,6 @@ func loadScheduledBackup(
 	return target.ScheduledBackup, nil
 }
 
-// readScheduledBackup pulls the first ScheduledBackup out of a manifest, which
-// may hold several documents.
 func readScheduledBackup(path string) (*borgbasev1.ScheduledBackup, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -109,8 +104,6 @@ func renderBackup(out io.Writer, sb *borgbasev1.ScheduledBackup, asCronJob bool)
 		return p.Err()
 	}
 
-	// A placeholder repository keeps this usable without a cluster; only the
-	// Secret name is drawn from it.
 	repo := &borgbasev1.Repository{
 		Namespace: sb.Namespace, Name: sb.Spec.RepositoryRef.Name,
 	}
@@ -190,7 +183,6 @@ Requires yq on PATH to read the HelmRelease.`,
 	return cmd
 }
 
-// plan is what a backup will do: the script, and when it runs.
 type plan struct {
 	script   string
 	schedule string
@@ -215,10 +207,6 @@ func runParity(out io.Writer, generatedPath, helmReleasePath string) error {
 		differences = append(differences, "SCRIPT DIFFERS")
 	}
 
-	// The schedule is compared by cadence, not by the minute it lands on.
-	// Migration hands a hand-jittered expression back to the operator as a
-	// shorthand, which deliberately moves the time; what must not change is how
-	// often the backup runs, since that is what the retention tiers assume.
 	renderedCadence, err := cadenceOf(rendered.schedule)
 	if err != nil {
 		return fmt.Errorf("reading the generated schedule: %w", err)
@@ -279,8 +267,7 @@ func renderedPlan(path string) (plan, error) {
 	if err != nil {
 		return plan{}, err
 	}
-	// Resolved rather than taken verbatim, because a shorthand schedule is
-	// jittered and the comparison has to see what the CronJob will get.
+
 	schedule, err := backup.ResolveSchedule(sb.Spec.Schedule, sb.Namespace+"/"+sb.Name)
 	if err != nil {
 		return plan{}, err
@@ -292,8 +279,6 @@ func renderedPlan(path string) (plan, error) {
 	return plan{script: script, schedule: schedule, timeZone: tz}, nil
 }
 
-// originalPlan pulls the shell body, schedule and time zone out of the
-// HelmRelease.
 func originalPlan(path string) (plan, error) {
 	hr, err := readHelmRelease(path)
 	if err != nil {
@@ -310,26 +295,11 @@ func originalPlan(path string) (plan, error) {
 
 	tz := controller.CronJob.TimeZone
 	if tz == "" {
-		// An unset time zone in the HelmRelease means the cluster's, which for
-		// this fleet is what the CRD defaults to.
 		tz = defaultTimeZone
 	}
 	return plan{script: script, schedule: controller.CronJob.Schedule, timeZone: tz}, nil
 }
 
-// normalizeScript ignores differences that cannot change what gets backed up:
-// trailing whitespace, the optional quoting around an --exclude pattern, and
-// the --retry-lock flag.
-//
-// Quoting a bare pattern is a safety improvement, not a change in what it
-// matches. --retry-lock only decides whether a command waits for the repository
-// lock or fails immediately; it selects no different data. Both are deliberate
-// improvements over the hand-written scripts, so comparing them verbatim would
-// report a difference on every app and hide the ones that matter.
-//
-// --secret-mount is the same kind of change: the hand-written scripts relied on
-// the dump tool's per-engine default, and naming the path explicitly points at
-// the same credentials rather than different ones.
 var ignoredFlags = regexp.MustCompile(` --(retry-lock|secret-mount)=\S+`)
 
 func normalizeScript(s string) string {
@@ -337,8 +307,7 @@ func normalizeScript(s string) string {
 	for line := range strings.SplitSeq(s, "\n") {
 		line = strings.TrimRight(line, " \t\\")
 		line = ignoredFlags.ReplaceAllString(line, "")
-		// Only unquote exclude patterns; stripping a trailing quote from every
-		// line could hide a genuine difference elsewhere in the script.
+
 		if strings.Contains(line, "--exclude=") {
 			line = strings.ReplaceAll(line, "--exclude='", "--exclude=")
 			line = strings.TrimSuffix(strings.TrimRight(line, " \t"), "'")

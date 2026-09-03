@@ -11,14 +11,10 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-// The three retention tiers in use. Hourly varies with backup frequency; the
-// daily, monthly and yearly floors are the same everywhere.
 func hourlyRetention() *borgbasev1.Retention    { return retention(168) }
 func sixHourlyRetention() *borgbasev1.Retention { return retention(28) }
 func dailyRetention() *borgbasev1.Retention     { return retention(0) }
 
-// retention builds a Retention keeping the shared daily, monthly and yearly
-// floors, plus the given number of hourly snapshots. Zero keeps no hourlies.
 func retention(hourly int32) *borgbasev1.Retention {
 	r := &borgbasev1.Retention{
 		Daily:   ptr.To[int32](90),
@@ -31,9 +27,6 @@ func retention(hourly int32) *borgbasev1.Retention {
 	return r
 }
 
-// The expected outputs below match the shape of the hand-written backups this
-// operator replaces. Rendering must reproduce them exactly, so that migrating an
-// app is not also a silent change of backup behaviour.
 func TestRender(t *testing.T) {
 	tests := []struct {
 		name string
@@ -41,7 +34,6 @@ func TestRender(t *testing.T) {
 		want string
 	}{
 		{
-			// A CNPG dump plus files with excludes.
 			name: "cnpg and files with excludes",
 			spec: borgbasev1.ScheduledBackupSpec{
 				Sources: []borgbasev1.BackupSource{
@@ -65,7 +57,6 @@ restic cache --cleanup
 `,
 		},
 		{
-			// A MariaDB dump with a passthrough flag, files, and the daily tier.
 			name: "mariadb with extra args",
 			spec: borgbasev1.ScheduledBackupSpec{
 				Sources: []borgbasev1.BackupSource{
@@ -84,7 +75,6 @@ restic cache --cleanup
 `,
 		},
 		{
-			// A second, explicitly named database under its own tag.
 			name: "named database with custom tag",
 			spec: borgbasev1.ScheduledBackupSpec{
 				Sources: []borgbasev1.BackupSource{
@@ -102,7 +92,6 @@ restic cache --cleanup
 `,
 		},
 		{
-			// Files only, no database.
 			name: "files only without excludes",
 			spec: borgbasev1.ScheduledBackupSpec{
 				Sources:   []borgbasev1.BackupSource{{Type: borgbasev1.SourceTypeFiles}},
@@ -116,7 +105,6 @@ restic cache --cleanup
 `,
 		},
 		{
-			// The six-hourly retention tier.
 			name: "six hourly retention tier",
 			spec: borgbasev1.ScheduledBackupSpec{
 				Sources:   []borgbasev1.BackupSource{{Type: borgbasev1.SourceTypeCNPG}},
@@ -155,8 +143,6 @@ restic cache --cleanup
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// The API server applies the retryLock default; do the same here so
-			// the golden output reflects what actually runs.
 			if tt.spec.RetryLock == nil {
 				tt.spec.RetryLock = &metav1.Duration{Duration: 5 * time.Minute}
 			}
@@ -180,8 +166,6 @@ func TestRenderUnknownSourceType(t *testing.T) {
 	}
 }
 
-// A single quote inside an exclude pattern must not be able to end the quoting
-// and let the rest of the pattern run as a command.
 func TestShellQuoteEscapesSingleQuotes(t *testing.T) {
 	got, err := Render(&borgbasev1.ScheduledBackupSpec{
 		Sources: []borgbasev1.BackupSource{
@@ -197,9 +181,6 @@ func TestShellQuoteEscapesSingleQuotes(t *testing.T) {
 	}
 }
 
-// Pruning takes an exclusive lock. Without a retry the backup that loses the
-// race fails outright, which is what happens whenever two schedules share a
-// repository, as during a migration.
 func TestRetryLockIsAppliedToLockingCommands(t *testing.T) {
 	spec := borgbasev1.ScheduledBackupSpec{
 		Sources: []borgbasev1.BackupSource{
@@ -224,7 +205,6 @@ func TestRetryLockIsAppliedToLockingCommands(t *testing.T) {
 	}
 }
 
-// Zero restores restic's own behaviour of failing immediately.
 func TestRetryLockCanBeDisabled(t *testing.T) {
 	for _, d := range []*metav1.Duration{nil, {Duration: 0}} {
 		spec := borgbasev1.ScheduledBackupSpec{
@@ -242,9 +222,6 @@ func TestRetryLockCanBeDisabled(t *testing.T) {
 	}
 }
 
-// An ordinary path must render bare, because corg parity compares the rendered
-// script against the hand-written one it replaces and quoting everything would
-// report a difference on every app.
 func TestOrdinaryPathsRenderUnquoted(t *testing.T) {
 	got, err := Render(&borgbasev1.ScheduledBackupSpec{
 		Sources: []borgbasev1.BackupSource{
@@ -259,7 +236,6 @@ func TestOrdinaryPathsRenderUnquoted(t *testing.T) {
 	}
 }
 
-// A path with a space would otherwise reach restic as two arguments.
 func TestPathWithSpaceIsQuoted(t *testing.T) {
 	got, err := Render(&borgbasev1.ScheduledBackupSpec{
 		Sources: []borgbasev1.BackupSource{

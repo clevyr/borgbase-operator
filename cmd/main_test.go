@@ -15,8 +15,6 @@ func TestParseNamespacedName(t *testing.T) {
 			wantName:  "borgbase-api",
 		},
 		{
-			// The default namespace is deliberately something the expectation
-			// cannot match, so this fails if precedence is ever inverted.
 			name:      "explicit namespace wins over the default",
 			in:        "other-ns/other-token",
 			defaultNS: "should-be-ignored",
@@ -24,9 +22,6 @@ func TestParseNamespacedName(t *testing.T) {
 			wantName:  "other-token",
 		},
 		{
-			// Without POD_NAMESPACE a bare name has nowhere to resolve.
-			// Guessing one would surface later as a confusing "secret not
-			// found" at reconcile time instead of failing at startup.
 			name:      "bare name with no default is an error",
 			in:        "some-secret",
 			defaultNS: "",

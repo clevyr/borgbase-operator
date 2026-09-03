@@ -9,20 +9,14 @@ import (
 	"github.com/clevyr/borgbase-operator/internal/borgbase"
 )
 
-// fakeAPI is an in-memory stand-in for BorgBase that records every call, so
-// tests can assert not just on the resulting state but on which operations the
-// controller was willing to perform.
 type fakeAPI struct {
 	mu    sync.Mutex
 	repos map[string]*borgbase.Repo
 
-	// calls records operation names in order.
 	calls []string
 
-	// edits records the options passed to each Edit call.
 	edits []borgbase.EditOptions
 
-	// getErr, if set, is returned by Get instead of a lookup.
 	getErr error
 }
 
@@ -87,8 +81,6 @@ func (f *fakeAPI) Add(_ context.Context, opts borgbase.AddOptions) (*borgbase.Re
 	return r, nil
 }
 
-// Edit applies the options, so a test can assert both that the controller
-// asked for a change and that it asked for the right one.
 func (f *fakeAPI) Edit(_ context.Context, id string, opts borgbase.EditOptions) (*borgbase.Repo, error) {
 	f.record("Edit")
 	f.mu.Lock()
@@ -113,7 +105,6 @@ func (f *fakeAPI) Edit(_ context.Context, id string, opts borgbase.EditOptions) 
 	return r, nil
 }
 
-// lastEdit returns the options of the most recent Edit call.
 func (f *fakeAPI) lastEdit() borgbase.EditOptions {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -1,7 +1,3 @@
-// Command kubectl-corg is the corg CLI.
-//
-// Installed as kubectl-corg it runs as `kubectl corg`; installed (or symlinked)
-// as corg it runs standalone. Both are the same binary.
 package main
 
 import (

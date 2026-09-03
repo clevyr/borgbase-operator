@@ -53,7 +53,6 @@ narrow it.`,
 	return cmd
 }
 
-// kindsToList maps the optional positional argument to the kinds to render.
 func kindsToList(args []string) ([]TargetKind, error) {
 	if len(args) == 0 {
 		return []TargetKind{TargetRepository, TargetScheduledBackup}, nil

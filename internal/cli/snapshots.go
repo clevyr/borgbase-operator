@@ -44,8 +44,6 @@ namespace; --host="" lifts it.`,
 					argv := []string{"snapshots"}
 					if !allTags {
 						for _, tag := range sourceTags(sb) {
-							// Repeated --tag is an OR, which is what we want:
-							// a backup's db and files snapshots are separate.
 							argv = append(argv, "--tag="+tag)
 						}
 					}

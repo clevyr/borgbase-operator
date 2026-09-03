@@ -6,173 +6,128 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// DeletionPolicy controls what happens to the BorgBase repository when the
-// Repository resource is deleted.
+// DeletionPolicy controls what happens to the BorgBase repository when the Repository is deleted.
 // +kubebuilder:validation:Enum=Retain;Delete
 type DeletionPolicy string
 
 const (
-	// DeletionPolicyRetain leaves the BorgBase repository and the generated
-	// Secret in place. This is the default: backups must never be destroyed as
-	// a side effect of removing a Kubernetes object.
+	// DeletionPolicyRetain leaves the BorgBase repository in place.
 	DeletionPolicyRetain DeletionPolicy = "Retain"
 
-	// DeletionPolicyDelete removes the BorgBase repository, and every snapshot
-	// in it, when the Repository is deleted. This is irreversible.
+	// DeletionPolicyDelete removes the BorgBase repository and its snapshots.
 	DeletionPolicyDelete DeletionPolicy = "Delete"
 )
 
-// Condition types reported on a Repository.
 const (
-	// RepositoryConditionReady is true once the repository exists in BorgBase,
-	// the Secret has been written, and the repository has been initialized.
+	// RepositoryConditionReady reports whether the repository is usable.
 	RepositoryConditionReady = "Ready"
 
-	// RepositoryConditionInitialized is true once `restic init` has succeeded
-	// against the repository.
+	// RepositoryConditionInitialized reports whether restic init has run.
 	RepositoryConditionInitialized = "Initialized"
 )
 
-// RepositorySpec defines the desired state of Repository.
-//
-// A Repository owns exactly one restic-format BorgBase repository plus the
-// Secret holding its credentials. Set existingRepositoryID to adopt a repo that
-// already exists; leave it unset to have one created.
+// RepositorySpec defines the desired state of a Repository.
 type RepositorySpec struct {
-	// interval is how often to re-reconcile against the BorgBase API, which
-	// also refreshes usage and quota in the status.
-	//
-	// The pattern matters: the API server stores this as a plain string, and a
-	// value Go cannot parse would break decoding of every Repository at once.
+	// Interval is how often the repository is reconciled against the BorgBase API.
 	// +kubebuilder:default:="1h"
 	// +kubebuilder:validation:XValidation:rule="self == '0' || self.matches('^([0-9]+([.][0-9]+)?(ns|us|ms|s|m|h))+$')",message="must be a Go duration such as 30m, 1h or 1h30m"
 	// +optional
 	Interval *metav1.Duration `json:"interval,omitempty"`
 
-	// suspend pauses reconciliation of this resource.
+	// Suspend stops reconciliation without deleting the resource.
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
 
-	// deletionPolicy controls whether deleting this resource also deletes the
-	// BorgBase repository. Retain is strongly preferred: Delete destroys every
-	// snapshot in the repository and cannot be undone.
+	// DeletionPolicy decides whether the BorgBase repository outlives this resource.
 	// +kubebuilder:default:=Retain
 	// +optional
 	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
 
-	// apiTokenSecretRef overrides the operator's default BorgBase API token.
-	// Use it to point a repository at a different BorgBase account.
+	// APITokenSecretRef points at the BorgBase API token. Defaults to the operator's own token.
 	// +optional
 	APITokenSecretRef *corev1.SecretKeySelector `json:"apiTokenSecretRef,omitempty"`
 
-	// existingRepositoryID adopts an already-existing BorgBase repository by
-	// its opaque ID (for example "a1b2c3d4"). When set, the operator only ever
-	// looks the repository up; it will never create one, and it will never
-	// generate a password. This is the migration path.
-	//
-	// The field is immutable, and cannot be added after a repository has been
-	// created for this resource: repointing a Repository at a different
-	// BorgBase repo would silently orphan the original backups.
+	// ExistingRepositoryID adopts an existing BorgBase repository instead of creating one.
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]{4,32}$`
 	// +optional
 	ExistingRepositoryID string `json:"existingRepositoryID,omitempty"`
 
-	// passwordSecretRef seeds the restic encryption password from an existing
-	// Secret instead of generating one. Required when adopting a repository
-	// that already holds snapshots, since the original password is the only
-	// way to read them.
-	//
-	// The operator reads this Secret and never writes to it, so it remains a
-	// disaster-recovery copy of the password. It must therefore be a different
-	// Secret from secretName.
+	// PasswordSecretRef seeds the restic password. Required when adopting.
 	// +optional
 	PasswordSecretRef *corev1.SecretKeySelector `json:"passwordSecretRef,omitempty"`
 
-	// repositoryName is the name given to a newly created BorgBase repository.
-	// Defaults to the namespace of this resource. Ignored when adopting.
+	// RepositoryName is the name given to the repository in BorgBase. Defaults to the namespace.
 	// +kubebuilder:validation:MaxLength=64
 	// +optional
 	RepositoryName string `json:"repositoryName,omitempty"`
 
-	// region is the BorgBase region a new repository is created in. Ignored
-	// when adopting.
+	// Region is the BorgBase region to create the repository in.
 	// +kubebuilder:default:="us"
 	// +optional
 	Region string `json:"region,omitempty"`
 
-	// quotaGiB caps repository size. Unset means no quota. The value is passed
-	// to BorgBase's quota field unchanged, and BorgBase reports sizes in GB, so
-	// treat the unit as whatever BorgBase means by it. Reconciled on every
-	// pass, so changing it here updates the repository.
+	// QuotaGiB caps repository size. Unset means no quota.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	QuotaGiB *int32 `json:"quotaGiB,omitempty"`
 
-	// alertDays makes BorgBase alert when the repository has not been written
-	// to for this many days. Unset leaves the account default. Reconciled on
-	// every pass.
+	// AlertDays is how many quiet days pass before BorgBase alerts. Unset means no alert.
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	AlertDays *int32 `json:"alertDays,omitempty"`
 
-	// appendOnly prevents clients from deleting existing data, which protects
-	// backups from a compromised host. `restic forget --prune` cannot run against
-	// an append-only repository. Reconciled on every pass.
+	// AppendOnly makes the repository reject deletes and overwrites.
 	// +optional
 	AppendOnly bool `json:"appendOnly,omitempty"`
 
-	// secretName is the Secret the operator writes RESTIC_REPOSITORY and
-	// RESTIC_PASSWORD into. Defaults to "<name>-borgbase". The operator only
-	// writes to Secrets it created itself, so this must not name a Secret that
-	// something else manages.
+	// SecretName overrides the name of the Secret the operator writes credentials to.
 	// +kubebuilder:validation:MaxLength=253
 	// +optional
 	SecretName string `json:"secretName,omitempty"`
 }
 
-// RepositoryStatus defines the observed state of Repository.
+// RepositoryStatus is the observed state of a Repository.
 type RepositoryStatus struct {
-	// conditions represent the current state of the Repository resource.
+	// Conditions holds the latest observations of the repository's state.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// observedGeneration is the .metadata.generation this status was computed from.
+	// ObservedGeneration is the spec generation this status was computed from.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// repositoryID is the BorgBase repository ID. Recording it here is the
-	// point of the operator: it makes the app-to-repo mapping visible without
-	// decrypting anything.
+	// RepositoryID is the BorgBase repository ID.
 	// +optional
 	RepositoryID string `json:"repositoryID,omitempty"`
 
-	// adopted reports whether this repository was adopted rather than created.
+	// Adopted reports whether the repository pre-existed this resource.
 	// +optional
 	Adopted bool `json:"adopted,omitempty"`
 
-	// initialized reports whether `restic init` has succeeded.
+	// Initialized reports whether restic init has completed.
 	// +optional
 	Initialized bool `json:"initialized,omitempty"`
 
-	// server is the BorgBase host serving this repository.
+	// Server is the host serving the repository over REST.
 	// +optional
 	Server string `json:"server,omitempty"`
 
-	// secretName is the Secret the credentials were written to.
+	// SecretName is the Secret holding the repository credentials.
 	// +optional
 	SecretName string `json:"secretName,omitempty"`
 
-	// currentUsage is the repository size reported by BorgBase.
+	// CurrentUsage is the human-readable size of the repository.
 	// +optional
 	CurrentUsage string `json:"currentUsage,omitempty"`
 
-	// quota is the configured size cap, if any.
+	// Quota is the human-readable quota, if one is set.
 	// +optional
 	Quota string `json:"quota,omitempty"`
 }
 
+// Repository is a restic repository hosted on BorgBase.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Repo ID",type="string",JSONPath=".status.repositoryID"
@@ -184,25 +139,20 @@ type RepositoryStatus struct {
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.spec.existingRepositoryID) || (has(self.spec.existingRepositoryID) && self.spec.existingRepositoryID == oldSelf.spec.existingRepositoryID)",message="existingRepositoryID cannot be changed or removed once set"
 // +kubebuilder:validation:XValidation:rule="has(oldSelf.spec.existingRepositoryID) || !has(self.spec.existingRepositoryID) || !has(oldSelf.status) || !has(oldSelf.status.repositoryID)",message="cannot adopt a different repository after one has been created for this resource"
 // +kubebuilder:validation:XValidation:rule="!has(self.spec.passwordSecretRef) || !has(self.spec.secretName) || self.spec.secretName != self.spec.passwordSecretRef.name",message="secretName must not be the passwordSecretRef Secret; the operator never writes to the seed"
-
-// Repository is the Schema for the repositories API.
 type Repository struct {
 	metav1.TypeMeta `json:",inline"`
 
-	// metadata is a standard object metadata
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitzero"`
 
-	// spec defines the desired state of Repository
 	// +required
 	Spec RepositorySpec `json:"spec"`
 
-	// status defines the observed state of Repository
 	// +optional
 	Status RepositoryStatus `json:"status,omitzero"`
 }
 
-// SecretName returns the name of the Secret the credentials are written to.
+// SecretName returns the Secret the operator writes credentials to.
 func (r *Repository) SecretName() string {
 	if r.Spec.SecretName != "" {
 		return r.Spec.SecretName
@@ -210,7 +160,7 @@ func (r *Repository) SecretName() string {
 	return r.Name + "-borgbase"
 }
 
-// RepositoryName returns the name to give a newly created BorgBase repository.
+// RepositoryName returns the name to give the repository in BorgBase.
 func (r *Repository) RepositoryName() string {
 	if r.Spec.RepositoryName != "" {
 		return r.Spec.RepositoryName
@@ -218,9 +168,8 @@ func (r *Repository) RepositoryName() string {
 	return r.Namespace
 }
 
+// RepositoryList is a list of Repository.
 // +kubebuilder:object:root=true
-
-// RepositoryList contains a list of Repository
 type RepositoryList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`

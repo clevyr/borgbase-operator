@@ -22,7 +22,7 @@ func TestDisplayName(t *testing.T) {
 		{"kubectl-corg", pluginDisplay},
 		{"/opt/homebrew/bin/kubectl-corg", pluginDisplay},
 		{"kubectl-corg.exe", pluginDisplay},
-		// kubectl accepts an underscore where a plugin name needs a dash.
+
 		{"kubectl-corg_thing", "kubectl corg-thing"},
 	}
 
@@ -48,7 +48,6 @@ func TestRootUsesInvokedIdentity(t *testing.T) {
 	}
 }
 
-// The connection flags must match kubectl's, or muscle memory breaks.
 func TestRootRegistersConnectionFlags(t *testing.T) {
 	cmd := New(testStreams(), binaryName)
 	for _, name := range []string{"namespace", "context", "kubeconfig"} {
@@ -61,7 +60,6 @@ func TestRootRegistersConnectionFlags(t *testing.T) {
 	}
 }
 
-// -A belongs on the commands that can honour it, not on every command.
 func TestAllNamespacesIsOptIn(t *testing.T) {
 	if f := New(testStreams(), binaryName).PersistentFlags().ShorthandLookup("A"); f != nil {
 		t.Error("-A must not be a persistent root flag")

@@ -7,10 +7,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// version is overridden at release time via -ldflags. When it is empty the
-// value baked in by `go build` from VCS metadata is used instead.
 var version string
 
+// Version returns the build version, falling back to the module version.
 func Version() string {
 	if version != "" {
 		return version

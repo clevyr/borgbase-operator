@@ -15,21 +15,25 @@ import (
 	borgbasev1 "github.com/clevyr/borgbase-operator/api/v1"
 )
 
+// TargetKind is the kind of resource a Target refers to.
 type TargetKind string
 
 const (
-	TargetRepository      TargetKind = "repository"
+	// TargetRepository is a Repository.
+	TargetRepository TargetKind = "repository"
+	// TargetScheduledBackup is a ScheduledBackup.
 	TargetScheduledBackup TargetKind = "scheduledbackup"
 )
 
 var (
+	// ErrTargetNotFound means no resource matched the argument.
 	ErrTargetNotFound = errors.New("not found")
-	ErrAmbiguous      = errors.New("ambiguous name")
-	ErrUnknownKind    = errors.New("unknown resource type")
+	// ErrAmbiguous means the name matched more than one kind.
+	ErrAmbiguous = errors.New("ambiguous name")
+	// ErrUnknownKind means the kind prefix is not recognised.
+	ErrUnknownKind = errors.New("unknown resource type")
 )
 
-// kindAliases maps every accepted prefix to its kind. These mirror the short
-// names the CRDs are registered under, plus the obvious abbreviations.
 var kindAliases = map[string]TargetKind{
 	"repository":       TargetRepository,
 	"repositories":     TargetRepository,
@@ -42,13 +46,14 @@ var kindAliases = map[string]TargetKind{
 	"backups":          TargetScheduledBackup,
 }
 
-// Target is a resolved command argument.
+// Target is a Repository or ScheduledBackup resolved from a command-line argument.
 type Target struct {
 	Kind            TargetKind
 	Repository      *borgbasev1.Repository
 	ScheduledBackup *borgbasev1.ScheduledBackup
 }
 
+// Name returns the target's name.
 func (t *Target) Name() string {
 	if t.Kind == TargetRepository {
 		return t.Repository.Name
@@ -56,6 +61,7 @@ func (t *Target) Name() string {
 	return t.ScheduledBackup.Name
 }
 
+// Namespace returns the target's namespace.
 func (t *Target) Namespace() string {
 	if t.Kind == TargetRepository {
 		return t.Repository.Namespace
@@ -63,11 +69,7 @@ func (t *Target) Namespace() string {
 	return t.ScheduledBackup.Namespace
 }
 
-// Resolve turns a command argument into the object it names.
-//
-// It accepts a bare name, or one qualified by kind: "web-files", "sb/web-files"
-// and "repository/prod" are all valid. A bare name that matches both kinds is
-// rejected rather than guessed.
+// Resolve looks up a target from an argument such as "name", "repo/name" or "sb/name".
 func Resolve(ctx context.Context, c client.Client, namespace, arg string) (*Target, error) {
 	if arg == "" {
 		return nil, fmt.Errorf("%w: empty name", ErrTargetNotFound)
@@ -99,8 +101,6 @@ func Resolve(ctx context.Context, c client.Client, namespace, arg string) (*Targ
 		return &Target{Kind: TargetRepository, Repository: repo}, nil
 	}
 
-	// Surface a real failure (RBAC, connectivity) rather than reporting it as
-	// a missing object.
 	for _, err := range []error{sbErr, repoErr} {
 		if !apierrors.IsNotFound(err) {
 			return nil, err
@@ -142,8 +142,7 @@ func getScheduledBackup(ctx context.Context, c client.Client, namespace, name st
 	return &sb, nil
 }
 
-// RepositoryFor loads the Repository a ScheduledBackup points at. Backups are
-// namespace-scoped and so is the reference.
+// RepositoryFor returns the Repository a backup writes to.
 func RepositoryFor(ctx context.Context, c client.Client, sb *borgbasev1.ScheduledBackup) (*borgbasev1.Repository, error) {
 	name := sb.Spec.RepositoryRef.Name
 	repo, err := getRepository(ctx, c, sb.Namespace, name)

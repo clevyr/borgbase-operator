@@ -28,17 +28,14 @@ import (
 	"github.com/clevyr/borgbase-operator/internal/backup"
 )
 
-// repositoryRefField indexes ScheduledBackups by the Repository they use, so a
-// Repository becoming ready can requeue everything that depends on it.
 const repositoryRefField = ".spec.repositoryRef.name"
 
-// ScheduledBackupReconciler reconciles a ScheduledBackup object.
+// ScheduledBackupReconciler reconciles ScheduledBackup objects.
 type ScheduledBackupReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
 
-	// Config carries the operator-level backup defaults.
 	Config backup.Config
 }
 
@@ -49,7 +46,7 @@ type ScheduledBackupReconciler struct {
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;create;delete
 
-// Reconcile renders a ScheduledBackup into a CronJob and its cache volume.
+// Reconcile keeps the backup's CronJob, cache claim and run history up to date.
 func (r *ScheduledBackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var sb borgbasev1.ScheduledBackup
 	if err := r.Get(ctx, req.NamespacedName, &sb); err != nil {
@@ -92,15 +89,12 @@ func (r *ScheduledBackupReconciler) reconcile(
 				Reason:  "RepositoryNotFound",
 				Message: fmt.Sprintf("Repository %q does not exist", sb.Spec.RepositoryRef.Name),
 			})
-			// A watch on Repository requeues this as soon as one appears.
+
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
 
-	// Never schedule a backup against a repository that has not been
-	// initialized: the run would fail, and on a fresh repository it could
-	// initialize it with the wrong password.
 	if !repo.Status.Initialized {
 		r.setCondition(sb, metav1.Condition{
 			Type:    borgbasev1.ScheduledBackupConditionReady,
@@ -111,9 +105,6 @@ func (r *ScheduledBackupReconciler) reconcile(
 		return ctrl.Result{}, nil
 	}
 
-	// Two backups reporting to one healthchecks check would let either one's
-	// success hide the other's failure, which defeats the point of a dead
-	// man's switch.
 	if other, err := r.slugConflict(ctx, sb); err != nil {
 		return ctrl.Result{}, err
 	} else if other != "" {
@@ -149,9 +140,6 @@ func (r *ScheduledBackupReconciler) reconcile(
 	case apierrors.IsNotFound(err):
 		if err := r.Create(ctx, desired); err != nil {
 			if apierrors.IsAlreadyExists(err) {
-				// The cache only holds CronJobs this operator labelled, so a
-				// name taken by something else looks absent right up until the
-				// create fails. Say so, rather than looping on a bare conflict.
 				return ctrl.Result{}, fmt.Errorf(
 					"CronJob %s already exists but is not managed by this operator; "+
 						"remove it or rename the ScheduledBackup", desired.Name)
@@ -164,8 +152,7 @@ func (r *ScheduledBackupReconciler) reconcile(
 	case err != nil:
 		return ctrl.Result{}, err
 	default:
-		// Overwrite the spec wholesale so that manual edits are corrected;
-		// the CronJob is entirely owned by this resource.
+
 		updated := current.DeepCopy()
 		updated.Spec = desired.Spec
 		updated.Labels = desired.Labels
@@ -197,16 +184,9 @@ func (r *ScheduledBackupReconciler) reconcile(
 		return ctrl.Result{}, err
 	}
 
-	// Poll so that lastSuccessfulTime stays fresh even though CronJob status
-	// changes do not always generate a watch event this controller sees.
 	return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 }
 
-// reconcileCache creates the restic cache volume if it does not exist.
-//
-// The claim is never resized or replaced in place: a bound PVC is immutable in
-// the ways that matter here, and silently deleting one would throw away the
-// cache the next prune depends on.
 func (r *ScheduledBackupReconciler) reconcileCache(
 	ctx context.Context, sb *borgbasev1.ScheduledBackup,
 ) error {
@@ -232,8 +212,6 @@ func (r *ScheduledBackupReconciler) reconcileCache(
 	return err
 }
 
-// deleteCache removes a cache volume the operator created, once the cache has
-// been turned off. A claim the operator does not own is left alone.
 func (r *ScheduledBackupReconciler) deleteCache(
 	ctx context.Context, sb *borgbasev1.ScheduledBackup,
 ) error {
@@ -251,11 +229,6 @@ func (r *ScheduledBackupReconciler) deleteCache(
 	return nil
 }
 
-// slugConflict returns the name of another ScheduledBackup in this namespace
-// that already pings the same healthchecks check, or "" when there is none.
-//
-// Only a backup that was created earlier counts as the incumbent, so the one
-// already reporting keeps working and the newcomer is the one held back.
 func (r *ScheduledBackupReconciler) slugConflict(
 	ctx context.Context, sb *borgbasev1.ScheduledBackup,
 ) (string, error) {
@@ -285,8 +258,6 @@ func (r *ScheduledBackupReconciler) slugConflict(
 	return "", nil
 }
 
-// olderThan reports whether a was created before b, falling back to name order
-// so that two objects created in the same second still resolve consistently.
 func olderThan(a, b *borgbasev1.ScheduledBackup) bool {
 	if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
 		return a.CreationTimestamp.Before(&b.CreationTimestamp)
@@ -294,9 +265,6 @@ func olderThan(a, b *borgbasev1.ScheduledBackup) bool {
 	return a.Name < b.Name
 }
 
-// patchStatus writes the computed status as a merge patch, avoiding the
-// resourceVersion conflicts a full Update hits when reading from a lagging
-// informer cache.
 func (r *ScheduledBackupReconciler) patchStatus(
 	ctx context.Context, sb *borgbasev1.ScheduledBackup, base *borgbasev1.ScheduledBackup,
 ) error {
@@ -314,7 +282,7 @@ func (r *ScheduledBackupReconciler) setCondition(
 	apimeta.SetStatusCondition(&sb.Status.Conditions, cond)
 }
 
-// SetupWithManager sets up the controller with the Manager.
+// SetupWithManager registers the controller with the manager.
 func (r *ScheduledBackupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Recorder == nil {
 		r.Recorder = mgr.GetEventRecorder("scheduledbackup-controller")
@@ -337,8 +305,6 @@ func (r *ScheduledBackupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		WithOptions(crcontroller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		For(&borgbasev1.ScheduledBackup{}, builder.WithPredicates(ignoreOwnStatusWrites(borgbasev1.AnnotationTriggerAt))).
 		Owns(&batchv1.CronJob{}).
-		// One-off runs are owned by the ScheduledBackup, so their completion
-		// updates history without waiting for the periodic requeue.
 		Owns(&batchv1.Job{}).
 		Watches(
 			&borgbasev1.Repository{},
@@ -348,8 +314,6 @@ func (r *ScheduledBackupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// backupsForRepository requeues every ScheduledBackup that uses a Repository,
-// so that a repository finishing initialization immediately unblocks them.
 func (r *ScheduledBackupReconciler) backupsForRepository(
 	ctx context.Context, obj client.Object,
 ) []reconcile.Request {

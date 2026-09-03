@@ -12,19 +12,14 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+// Errors returned when reading a HelmRelease.
 var (
 	ErrNoResticController = errors.New("no restic controller in the HelmRelease")
 	ErrNoResticScript     = errors.New("no restic command in the HelmRelease")
 )
 
-// resticController is the key the hand-written HelmReleases use for the backup
-// controller and its container.
 const resticController = "restic"
 
-// helmRelease is the subset of a bjw-s app-template HelmRelease that describes
-// a backup. Parsing it into types rather than querying it with yq means a
-// missing field is a compile-time shape, an unexpected one is an error, and
-// nothing depends on an external tool being installed.
 type helmRelease struct {
 	Metadata struct {
 		Namespace string `json:"namespace"`
@@ -49,8 +44,7 @@ type hrController struct {
 type hrContainer struct {
 	Command    []string `json:"command"`
 	WorkingDir string   `json:"workingDir"`
-	// Env values are usually plain strings but may be a valueFrom object, so
-	// they are read loosely and coerced.
+
 	Env map[string]any `json:"env"`
 }
 
@@ -73,7 +67,6 @@ func readHelmRelease(path string) (*helmRelease, error) {
 	return &hr, nil
 }
 
-// backupController returns the restic controller and its container.
 func (hr *helmRelease) backupController() (hrController, hrContainer, error) {
 	controller, ok := hr.Spec.Values.Controllers[resticController]
 	if !ok {
@@ -86,8 +79,6 @@ func (hr *helmRelease) backupController() (hrController, hrContainer, error) {
 	return controller, container, nil
 }
 
-// script is the shell body, which is the last element of the runitor
-// invocation.
 func (c hrContainer) script() (string, error) {
 	if len(c.Command) == 0 {
 		return "", ErrNoResticScript
@@ -106,13 +97,11 @@ func (c hrContainer) env(name string) string {
 	case int, int64, float64, bool:
 		return fmt.Sprint(value)
 	default:
-		// A valueFrom reference cannot be carried across as a literal.
+
 		return ""
 	}
 }
 
-// existingClaim returns the first persistence entry backed by a claim, which is
-// the volume being backed up.
 func (hr *helmRelease) existingClaim() string {
 	for _, name := range sortedKeys(hr.Spec.Values.Persistence) {
 		if claim := hr.Spec.Values.Persistence[name].ExistingClaim; claim != "" {
@@ -122,8 +111,6 @@ func (hr *helmRelease) existingClaim() string {
 	return ""
 }
 
-// databaseSecret returns the first Secret-typed persistence entry, which is
-// where the database credentials are mounted.
 func (hr *helmRelease) databaseSecret() string {
 	for _, name := range sortedKeys(hr.Spec.Values.Persistence) {
 		p := hr.Spec.Values.Persistence[name]
@@ -138,12 +125,6 @@ func (hr *helmRelease) cacheStorageClass() string {
 	return hr.Spec.Values.Persistence["cache"].StorageClass
 }
 
-// splitArgs splits a shell line into words, honouring single and double quotes.
-//
-// The hand-written scripts quote exclude patterns inconsistently -- some are
-// single-quoted, some bare -- and a naive split on whitespace would break a
-// quoted pattern containing a space into two excludes, silently widening what
-// is backed up.
 func splitArgs(line string) []string {
 	var args []string
 	var current strings.Builder
@@ -178,7 +159,6 @@ func splitArgs(line string) []string {
 	return args
 }
 
-// flagValue returns the value of --name=value, and whether it was present.
 func flagValue(args []string, name string) (string, bool) {
 	prefix := "--" + name + "="
 	for _, a := range args {
@@ -189,7 +169,6 @@ func flagValue(args []string, name string) (string, bool) {
 	return "", false
 }
 
-// flagValues returns every occurrence of --name=value.
 func flagValues(args []string, name string) []string {
 	prefix := "--" + name + "="
 	var out []string
@@ -210,8 +189,6 @@ func parseInt32(s string) (*int32, error) {
 	return &v, nil
 }
 
-// joinContinuations folds a script's backslash line continuations, so one
-// logical restic invocation is one line.
 func joinContinuations(script string) []string {
 	var lines []string
 	var current strings.Builder
@@ -235,13 +212,10 @@ func joinContinuations(script string) []string {
 	return lines
 }
 
-// sortedKeys makes map iteration deterministic, so the same HelmRelease always
-// migrates to the same resource.
 func sortedKeys[V any](m map[string]V) []string {
 	return slices.Sorted(maps.Keys(m))
 }
 
-// scheduleOf returns the schedule as written in the HelmRelease.
 func (hr *helmRelease) scheduleOf() string {
 	return hr.Spec.Values.Controllers[resticController].CronJob.Schedule
 }

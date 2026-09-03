@@ -51,7 +51,6 @@ func boundCache(sb *borgbasev1.ScheduledBackup) *corev1.PersistentVolumeClaim {
 	}
 }
 
-// healthy builds a fully working backup plus everything it depends on.
 func healthy(t *testing.T) (client.Client, *borgbasev1.ScheduledBackup) {
 	t.Helper()
 	r := readyRepo(testNS)
@@ -95,7 +94,6 @@ func TestDoctorHealthy(t *testing.T) {
 	}
 }
 
-// The migration failure the operator refuses to work around.
 func TestDoctorDetectsCronJobAdoptionConflict(t *testing.T) {
 	r := readyRepo(testNS)
 	sb := readyBackup(testBackupName, testRepoName)
@@ -152,7 +150,6 @@ func TestDoctorDetectsIncompleteSecret(t *testing.T) {
 	}
 }
 
-// A run that started and failed must read as a failure, not as silence.
 func TestDoctorDetectsFailedMostRecentRun(t *testing.T) {
 	r := readyRepo(testNS)
 	sb := readyBackup(testBackupName, testRepoName)
@@ -171,7 +168,6 @@ func TestDoctorDetectsFailedMostRecentRun(t *testing.T) {
 	}
 }
 
-// A backup running right now must not be mistaken for a failed run.
 func TestDoctorIgnoresRunInProgress(t *testing.T) {
 	r := readyRepo(testNS)
 	sb := readyBackup(testBackupName, testRepoName)
@@ -191,7 +187,6 @@ func TestDoctorIgnoresRunInProgress(t *testing.T) {
 	}
 }
 
-// Suspension is deliberate, so it warns but must not fail.
 func TestDoctorSuspendedWarnsWithoutFailing(t *testing.T) {
 	c, sb := healthy(t)
 	sb.Spec.Suspend = true
@@ -269,8 +264,6 @@ func TestDoctorEmptyNamespace(t *testing.T) {
 	}
 }
 
-// A manual run never sets lastScheduleTime, so a backup triggered by hand used
-// to report as one that had never run at all.
 func TestDoctorReadsHistoryForManualRuns(t *testing.T) {
 	r := readyRepo(testNS)
 	sb := readyBackup(testBackupName, testRepoName)
@@ -296,7 +289,6 @@ func TestDoctorReadsHistoryForManualRuns(t *testing.T) {
 	}
 }
 
-// A failed run recorded in history must fail doctor.
 func TestDoctorReportsAFailedRunFromHistory(t *testing.T) {
 	r := readyRepo(testNS)
 	sb := readyBackup(testBackupName, testRepoName)

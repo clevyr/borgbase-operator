@@ -19,12 +19,8 @@ import (
 	"github.com/clevyr/borgbase-operator/internal/cli/runner"
 )
 
-// purposeRestore names the ephemeral Job a restore runs in.
 const purposeRestore = "restore"
 
-// restoreToDir streams the snapshot out of the cluster as a tar and unpacks it
-// locally. Nothing is staged on disk in the cluster, so this needs no scratch
-// volume and works regardless of how large the source claim is.
 func restoreToDir(
 	ctx context.Context, f *Factory, sb *borgbasev1.ScheduledBackup, o *restoreOptions,
 ) error {
@@ -58,8 +54,6 @@ func restoreToDir(
 
 			errCh := make(chan error, 1)
 			go func() {
-				// restic dump --archive tar emits a stream, so nothing is
-				// written to disk on either side.
 				err := run.Exec(ctx, pod, kube.ExecOptions{
 					Command: resticCommand("dump", "--archive=tar", o.snapshot, path),
 					Stdout:  writer,
@@ -84,7 +78,6 @@ func restoreToDir(
 		})
 }
 
-// untar unpacks a tar stream, refusing entries that would escape dest.
 func untar(r io.Reader, dest string) (int, error) {
 	tr := tar.NewReader(r)
 	count := 0
@@ -98,8 +91,6 @@ func untar(r io.Reader, dest string) (int, error) {
 			return count, err
 		}
 
-		// A tar from a backup is not necessarily trusted input; an entry named
-		// ../../etc/passwd must not be written outside the target directory.
 		target := filepath.Join(dest, filepath.Clean("/"+header.Name))
 		if !strings.HasPrefix(target, filepath.Clean(dest)+string(os.PathSeparator)) &&
 			target != filepath.Clean(dest) {
@@ -144,8 +135,6 @@ func writeFile(path string, mode os.FileMode, r io.Reader) error {
 	return file.Close()
 }
 
-// restoreToNewPVC stages a restore into a fresh claim, leaving the live one
-// untouched so the result can be inspected before anything is committed.
 func restoreToNewPVC(
 	ctx context.Context, f *Factory, c client.Client, sb *borgbasev1.ScheduledBackup, o *restoreOptions,
 ) error {
@@ -205,8 +194,6 @@ func restoreToNewPVC(
 	return done.Err()
 }
 
-// claimSize takes the new claim's size from the flag, else from the claim being
-// restored, so the copy is guaranteed to fit.
 func claimSize(
 	ctx context.Context, c client.Client, sb *borgbasev1.ScheduledBackup, override string,
 ) (resource.Quantity, error) {
@@ -229,10 +216,6 @@ func claimSize(
 		"pvc/%s requests no storage size; pass --size", source.Name)
 }
 
-// restoreInPlace overwrites the live source volume.
-//
-// The schedule is suspended for the duration so a scheduled backup cannot run
-// against a half-restored tree and capture it as the new truth.
 func restoreInPlace(
 	ctx context.Context, f *Factory, c client.Client, sb *borgbasev1.ScheduledBackup, o *restoreOptions,
 ) error {
@@ -249,8 +232,7 @@ func restoreInPlace(
 	if err != nil {
 		return err
 	}
-	// Restoring the previous suspend state is deferred so that a cancelled
-	// restore cannot leave the schedule suspended.
+
 	defer func() {
 		if err := restore(); err != nil {
 			p := newPrinter(f.Streams.ErrOut)
@@ -277,8 +259,6 @@ func restoreInPlace(
 	}, f.Streams.Out, defaultResticTimeout)
 }
 
-// suspendForRestore suspends the schedule and returns a function that puts it
-// back the way it was.
 func suspendForRestore(
 	ctx context.Context, c client.Client, sb *borgbasev1.ScheduledBackup, dryRun bool,
 ) (func() error, error) {
@@ -293,7 +273,6 @@ func suspendForRestore(
 	}
 
 	return func() error {
-		// Detached from the caller's context: a Ctrl-C must still un-suspend.
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), cleanupTimeout)
 		defer cancel()
 
@@ -308,8 +287,6 @@ func suspendForRestore(
 	}, nil
 }
 
-// restoreToDatabase streams the dump back through restoredb, the inverse of the
-// dumpdb the backup used.
 func restoreToDatabase(
 	ctx context.Context, f *Factory, sb *borgbasev1.ScheduledBackup, o *restoreOptions,
 ) error {
@@ -331,20 +308,13 @@ func restoreToDatabase(
 		return err
 	}
 
-	// The dump is stored in the snapshot under the host name, which the backup
-	// sets to the namespace, with an extension fixed by the engine.
 	dumpFile := sb.Namespace + dumpExtension(db.Engine)
 
-	// The dump lives in the snapshot its own source wrote. A backup that also
-	// takes files writes a second, newer snapshot, so an unqualified "latest"
-	// resolves to that one, which holds no dump.
 	dump := "dump"
 	if tag := databaseSourceTag(sb); tag != "" {
 		dump += " --tag=" + shellQuote(tag)
 	}
 
-	// The same --secret-mount the backup passes to dumpdb, so restore reads the
-	// credentials from where the operator actually mounted them.
 	pipeline := fmt.Sprintf("restic %s %s %s | restoredb %s --secret-mount=%s",
 		dump, shellQuote(o.snapshot), shellQuote(dumpFile), string(db.Engine),
 		borgbasev1.DBSecretMountPath)
@@ -358,9 +328,6 @@ func restoreToDatabase(
 		return err
 	}
 
-	// Fail with something actionable rather than `restoredb: not found` from
-	// the shell: the image's tags are mutable, so an older pull has no
-	// restoredb even at the same tag.
 	guarded := fmt.Sprintf(
 		"command -v restoredb >/dev/null 2>&1 || { echo %s >&2; exit 1; }\n%s",
 		shellQuote("this backup image has no restoredb; re-pull ghcr.io/clevyr/restic "+
@@ -373,8 +340,6 @@ func restoreToDatabase(
 	}, f.Streams.Out, defaultResticTimeout)
 }
 
-// dumpExtension mirrors the rule the backup image's restic wrapper uses when it
-// names the dump inside a snapshot.
 func dumpExtension(engine borgbasev1.DatabaseEngine) string {
 	switch engine {
 	case borgbasev1.DatabaseEngineCNPG:
@@ -384,8 +349,6 @@ func dumpExtension(engine borgbasev1.DatabaseEngine) string {
 	}
 }
 
-// databaseSourceTag returns the tag the database dump is written under, so a
-// restore reads the snapshot that actually holds it.
 func databaseSourceTag(sb *borgbasev1.ScheduledBackup) string {
 	for i := range sb.Spec.Sources {
 		switch sb.Spec.Sources[i].Type {

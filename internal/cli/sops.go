@@ -10,9 +10,9 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+// ErrSopsUnavailable means sops is not on PATH.
 var ErrSopsUnavailable = errors.New("sops is required to read the encrypted repository ID")
 
-// decryptedSecret is the shape of the app's secret.yaml once sops has opened it.
 type decryptedSecret struct {
 	StringData map[string]string `json:"stringData"`
 	Data       map[string]string `json:"data"`
@@ -21,13 +21,11 @@ type decryptedSecret struct {
 // repositoryIDFromSecret recovers the BorgBase repository ID, which is recorded
 // nowhere except inside the encrypted RESTIC_REPOSITORY value.
 //
-// Decryption is delegated to the sops binary rather than linked in. The sops
-// library pulls every KMS backend it supports -- AWS, Azure, GCP, Vault, age
-// and PGP -- which measured at 61MB on top of a 93MB binary, for one field read
-// once per app during a migration that happens once. Decryption is also the one
-// step that needs the operator's own cloud credentials, which is exactly what
-// the sops binary already manages. Everything else about this migration is
-// parsed and emitted in Go, and --repository-id skips this path entirely.
+// Decryption is delegated to the sops binary rather than linked in: the library
+// pulls every KMS backend it supports (AWS, Azure, GCP, Vault, age, PGP), which
+// measured at 61MB on top of a 93MB binary, for one field read once per app
+// during a one-time migration. It is also the only step needing the operator's
+// own cloud credentials, which the sops binary already manages.
 func repositoryIDFromSecret(path string) (string, error) {
 	if _, err := os.Stat(path); err != nil {
 		return "", fmt.Errorf("no secret.yaml alongside the HelmRelease: %w; "+
@@ -62,7 +60,6 @@ func repositoryIDFromSecret(path string) (string, error) {
 	return repositoryIDFromURL(url)
 }
 
-// repositoryIDFromURL pulls the id out of rest:https://<id>:<password>@<host>.
 func repositoryIDFromURL(url string) (string, error) {
 	rest, ok := strings.CutPrefix(url, "rest:https://")
 	if !ok {

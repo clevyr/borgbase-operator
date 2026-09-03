@@ -6,26 +6,23 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
-// ignoreOwnStatusWrites skips update events that changed nothing but status.
+// ignoreOwnStatusWrites drops update events that changed nothing but status.
 //
-// Writing status re-triggers the controller, and that pass reads from an
-// informer cache which has not caught up with the write yet. It therefore
-// re-observes work it has already done, duplicating the events that report it.
+// A status write re-triggers the controller, and that pass reads an informer
+// cache that has not caught up with the write, so it re-observes work it has
+// already done and duplicates the events reporting it.
 //
-// Creates, deletes, spec changes and finalizer changes all still come through,
-// so this cannot strand an object mid-deletion.
-//
-// Any annotation named in watchAnnotations also comes through. Annotations do
-// not advance the generation, so without this an object whose only change is a
-// request-carrying annotation would be filtered out and the request never
-// acted on.
+// Deletions and finalizer changes are let through so this cannot strand an
+// object mid-deletion, and watchAnnotations are let through because annotations
+// do not advance the generation: a request carried by one would otherwise be
+// filtered out and never acted on.
 func ignoreOwnStatusWrites(watchAnnotations ...string) predicate.Predicate {
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			if e.ObjectOld == nil || e.ObjectNew == nil {
 				return true
 			}
-			// Never filter anything to do with teardown.
+
 			if !e.ObjectNew.GetDeletionTimestamp().IsZero() {
 				return true
 			}
@@ -37,8 +34,7 @@ func ignoreOwnStatusWrites(watchAnnotations ...string) predicate.Predicate {
 					return true
 				}
 			}
-			// Generation only advances on spec changes, so an unchanged
-			// generation means status is all that moved.
+
 			return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration()
 		},
 	}

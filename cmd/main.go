@@ -7,8 +7,6 @@ import (
 	"os"
 	"strings"
 
-	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
-	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -35,8 +33,6 @@ import (
 	// +kubebuilder:scaffold:imports
 )
 
-// defaultBackupImage is the Clevyr restic image, which bundles restic,
-// runitor, ts and the dumpdb helper the generated scripts rely on.
 const defaultBackupImage = "ghcr.io/clevyr/restic:0.18.1"
 
 var (
@@ -44,8 +40,6 @@ var (
 	setupLog = ctrl.Log.WithName("setup")
 )
 
-// parseNamespacedName parses a "namespace/name" value, falling back to
-// defaultNS for a bare name.
 func parseNamespacedName(s, defaultNS string) (types.NamespacedName, error) {
 	ns, name, ok := strings.Cut(s, "/")
 	if !ok {
@@ -78,7 +72,6 @@ func main() {
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
 
-	// Operator-level configuration.
 	var apiTokenSecret, apiTokenKey, backupImage, cacheStorageClass, borgbaseEndpoint string
 	var healthchecksEnabled, healthchecksAutoCreate bool
 	var healthchecksAPIURL string
@@ -99,9 +92,7 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	// Production defaults: JSON encoding at info level. Development mode logs
-	// at debug in console format and panics on DPanic, none of which belongs in
-	// a controller nobody is watching.
+
 	opts := zap.Options{
 		Development: false,
 	}
@@ -131,12 +122,6 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	// if the enable-http2 flag is false (the default), http/2 should be disabled
-	// due to its vulnerabilities. More specifically, disabling http/2 will
-	// prevent from being vulnerable to the HTTP/2 Stream Cancellation and
-	// Rapid Reset CVEs. For more information see:
-	// - https://github.com/advisories/GHSA-qppj-fm5r-hxr3
-	// - https://github.com/advisories/GHSA-4374-p667-p6c8
 	disableHTTP2 := func(c *tls.Config) {
 		setupLog.Info("Disabling HTTP/2")
 		c.NextProtos = []string{"http/1.1"}
@@ -146,7 +131,6 @@ func main() {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
-	// Initial webhook TLS options
 	webhookTLSOpts := tlsOpts
 	webhookServerOptions := webhook.Options{
 		TLSOpts: webhookTLSOpts,
@@ -163,10 +147,6 @@ func main() {
 
 	webhookServer := webhook.NewServer(webhookServerOptions)
 
-	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
-	// More info:
-	// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/metrics/server
-	// - https://book.kubebuilder.io/reference/metrics.html
 	metricsServerOptions := metricsserver.Options{
 		BindAddress:   metricsAddr,
 		SecureServing: secureMetrics,
@@ -174,17 +154,9 @@ func main() {
 	}
 
 	if secureMetrics {
-		// FilterProvider is used to protect the metrics endpoint with authn/authz.
-		// These configurations ensure that only authorized users and service accounts
-		// can access the metrics endpoint. The RBAC are configured in 'config/rbac/kustomization.yaml'. More info:
-		// https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/metrics/filters#WithAuthenticationAndAuthorization
 		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
 	}
 
-	// Without an explicit certificate, controller-runtime self-signs one for the
-	// metrics server. That is fine here because metrics are not exposed outside
-	// the cluster; serving them publicly would want a real certificate, via the
-	// METRICS-WITH-CERTS and PROMETHEUS-WITH-CERTS sections in config/.
 	if len(metricsCertPath) > 0 {
 		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
 			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName, "metrics-cert-key", metricsCertKey)
@@ -194,16 +166,12 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
-	// managedByOperator bounds what the informer cache holds. Without it the
-	// manager caches every object of every watched type, cluster-wide.
 	managedByOperator := cache.ByObject{
 		Label: labels.SelectorFromSet(labels.Set{
 			"app.kubernetes.io/managed-by": "borgbase-operator",
 		}),
 	}
 
-	// Resolved before the manager is built, so a bad flag fails immediately
-	// rather than after the process has connected and started caches.
 	tokenSecret, err := parseNamespacedName(apiTokenSecret, os.Getenv("POD_NAMESPACE"))
 	if err != nil {
 		setupLog.Error(err, "Invalid --api-token-secret")
@@ -214,9 +182,6 @@ func main() {
 		Scheme:  scheme,
 		Metrics: metricsServerOptions,
 		Cache: cache.Options{
-			// Only this operator's own Jobs and CronJobs are worth watching.
-			// Caching every Job in the cluster would grow without bound as
-			// unrelated CronJobs fire.
 			ByObject: map[client.Object]cache.ByObject{
 				&batchv1.Job{}:     managedByOperator,
 				&batchv1.CronJob{}: managedByOperator,
@@ -224,13 +189,10 @@ func main() {
 		},
 		Client: client.Options{
 			Cache: &client.CacheOptions{
-				// Never cache Secrets or PersistentVolumeClaims. This operator
-				// reads a handful of Secrets by name, but a cached client
-				// builds an informer over all of them, which on a busy cluster
-				// means holding every Helm release secret and every reflected
-				// pull secret in memory. That is both the reason the manager
-				// was being OOM killed and an unnecessary place for every
-				// secret in the cluster to sit.
+				// A cached client builds an informer over every object of the type, not
+				// just the handful read by name. Caching Secrets holds every Helm
+				// release and pull secret in the cluster in memory, which is what was
+				// OOM killing the manager.
 				DisableFor: []client.Object{
 					&corev1.Secret{},
 					&corev1.PersistentVolumeClaim{},
@@ -241,17 +203,6 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "936ba482.clevyr.com",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
 		setupLog.Error(err, "Failed to start manager")

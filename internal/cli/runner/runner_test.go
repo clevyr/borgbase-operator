@@ -24,8 +24,6 @@ const (
 	testDBName = "app"
 )
 
-// testCommand stands in for whatever restic invocation a command builds; these
-// tests are about the Job the runner derives, not the argv.
 var testCommand = []string{"restic", "snapshots"}
 
 func fixture(t *testing.T, mutate func(*borgbasev1.ScheduledBackup)) (*Runner, *borgbasev1.ScheduledBackup) {
@@ -44,8 +42,6 @@ func fixture(t *testing.T, mutate func(*borgbasev1.ScheduledBackup)) (*Runner, *
 	}
 	repo := &borgbasev1.Repository{Namespace: testNS, Name: testRepo}
 
-	// Derive the CronJob the way the operator does, so the runner is tested
-	// against the real rendered shape rather than a hand-built stand-in.
 	cj, err := backup.BuildCronJob(sb, repo, backup.Config{Image: testImage})
 	if err != nil {
 		t.Fatalf("BuildCronJob: %v", err)
@@ -97,11 +93,11 @@ func TestBuildInheritsTheOperatorsConfiguration(t *testing.T) {
 	if strings.Join(c.Command, " ") != strings.Join(testCommand, " ") {
 		t.Errorf("command = %v, want the override", c.Command)
 	}
-	// The credentials arrive via envFrom; losing it would make restic useless.
+
 	if len(c.EnvFrom) == 0 || c.EnvFrom[0].SecretRef == nil {
 		t.Errorf("envFrom was not inherited: %+v", c.EnvFrom)
 	}
-	// Snapshots are hosted by namespace, so filters depend on this.
+
 	if envOf(c, "RESTIC_HOST") == nil {
 		t.Error("RESTIC_HOST was not inherited")
 	}
@@ -110,8 +106,6 @@ func TestBuildInheritsTheOperatorsConfiguration(t *testing.T) {
 	}
 }
 
-// The operator's Job cache and its Owns() watch filter on managed-by. Marking a
-// debugging pod as operator-managed would make it show up as a backup run.
 func TestBuildIsNotLabelledAsOperatorManaged(t *testing.T) {
 	r, sb := fixture(t, nil)
 
@@ -126,8 +120,6 @@ func TestBuildIsNotLabelledAsOperatorManaged(t *testing.T) {
 	}
 }
 
-// The cache claim may be ReadWriteOnce, in which case sharing it with a running
-// backup would leave this pod unschedulable.
 func TestBuildUsesScratchCacheByDefault(t *testing.T) {
 	r, sb := fixture(t, nil)
 	ctx := context.Background()
@@ -161,8 +153,6 @@ func TestBuildDataVolumeAndAffinity(t *testing.T) {
 	r, sb := fixture(t, withVolume)
 	ctx := context.Background()
 
-	// Without data, the hard affinity that exists only to follow a RWO claim
-	// would pin the pod to one node for no reason.
 	bare, err := r.Build(ctx, sb, Options{Command: testCommand})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -175,7 +165,6 @@ func TestBuildDataVolumeAndAffinity(t *testing.T) {
 		t.Error("required pod affinity should be dropped with the data volume")
 	}
 
-	// With data, both come back, and read-only is lifted so a restore can write.
 	restore, err := r.Build(ctx, sb, Options{Command: testCommand, MountData: true})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -199,8 +188,6 @@ func TestBuildDataVolumeAndAffinity(t *testing.T) {
 	}
 }
 
-// MariaDB network policies select clients by this label, so a restore that
-// talks to MariaDB is denied without it.
 func TestBuildKeepsMariaDBClientLabel(t *testing.T) {
 	r, sb := fixture(t, func(sb *borgbasev1.ScheduledBackup) {
 		sb.Spec.Database = &borgbasev1.DatabaseSpec{
@@ -266,7 +253,6 @@ func TestJobNameFitsAndIsUnique(t *testing.T) {
 	}
 }
 
-// A pod that will never start should be reported, not waited out.
 func TestBlockedReason(t *testing.T) {
 	pod := &corev1.Pod{Status: corev1.PodStatus{
 		ContainerStatuses: []corev1.ContainerStatus{{
@@ -309,9 +295,6 @@ func envOf(c *corev1.Container, name string) *corev1.EnvVar {
 	return nil
 }
 
-// A Secret or claim that is missing leaves the pod Pending with no container
-// status to read, so it is caught before anything is created rather than
-// diagnosed afterwards.
 func TestPreflightCatchesAMissingSecret(t *testing.T) {
 	r, sb := fixture(t, func(sb *borgbasev1.ScheduledBackup) {
 		sb.Spec.Database = &borgbasev1.DatabaseSpec{
@@ -319,8 +302,6 @@ func TestPreflightCatchesAMissingSecret(t *testing.T) {
 		}
 	})
 
-	// The credentials Secret has to exist, or that is what preflight reports
-	// first; this is about the database Secret specifically.
 	if err := r.Client.Create(context.Background(),
 		&corev1.Secret{Namespace: testNS, Name: testRepo + "-borgbase"}); err != nil {
 		t.Fatal(err)
@@ -335,14 +316,12 @@ func TestPreflightCatchesAMissingSecret(t *testing.T) {
 	if !errors.Is(err, ErrMissingDependency) {
 		t.Fatalf("expected ErrMissingDependency, got %v", err)
 	}
-	// The message has to name what is missing, or it is no better than the hang.
+
 	if !strings.Contains(err.Error(), "postgresql-app") {
 		t.Errorf("error should name the missing Secret: %v", err)
 	}
 }
 
-// The credentials Secret is mounted with envFrom rather than as a volume, so it
-// has to be checked too.
 func TestPreflightChecksEnvFromSecrets(t *testing.T) {
 	r, sb := fixture(t, nil)
 
@@ -357,7 +336,6 @@ func TestPreflightChecksEnvFromSecrets(t *testing.T) {
 	}
 }
 
-// With everything present, preflight passes.
 func TestPreflightPassesWhenDependenciesExist(t *testing.T) {
 	r, sb := fixture(t, nil)
 
@@ -379,7 +357,6 @@ func TestPreflightPassesWhenDependenciesExist(t *testing.T) {
 	}
 }
 
-// An unschedulable pod is reported from its conditions.
 func TestBlockedReasonUnschedulable(t *testing.T) {
 	pod := &corev1.Pod{Status: corev1.PodStatus{
 		Conditions: []corev1.PodCondition{{
@@ -393,9 +370,6 @@ func TestBlockedReasonUnschedulable(t *testing.T) {
 	}
 }
 
-// Only a restore into the database needs its credentials. Mounting them into
-// every run makes an unrelated misconfiguration fail commands that never touch
-// the database, and holds a Secret the run has no use for.
 func TestBuildOnlyMountsDatabaseCredentialsWhenAsked(t *testing.T) {
 	mutate := func(sb *borgbasev1.ScheduledBackup) {
 		sb.Spec.Database = &borgbasev1.DatabaseSpec{

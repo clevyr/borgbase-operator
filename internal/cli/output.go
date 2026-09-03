@@ -15,18 +15,22 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// Output formats accepted by -o.
 const (
+	// OutputTable is the default human-readable table.
 	OutputTable = ""
-	OutputWide  = "wide"
-	OutputJSON  = "json"
-	OutputYAML  = "yaml"
-	OutputName  = "name"
+	// OutputWide is the table with extra columns.
+	OutputWide = "wide"
+	// OutputJSON prints the object as JSON.
+	OutputJSON = "json"
+	// OutputYAML prints the object as YAML.
+	OutputYAML = "yaml"
+	// OutputName prints only resource names.
+	OutputName = "name"
 )
 
 var outputFormats = []string{OutputWide, OutputJSON, OutputYAML, OutputName}
 
-// AddOutputFlag registers -o on commands that render a list of objects.
+// AddOutputFlag registers the -o/--output flag on cmd.
 func AddOutputFlag(cmd *cobra.Command, target *string) {
 	cmd.Flags().StringVarP(target, "output", "o", OutputTable,
 		fmt.Sprintf("Output format. One of: %s", strings.Join(outputFormats, "|")))
@@ -37,6 +41,7 @@ func AddOutputFlag(cmd *cobra.Command, target *string) {
 		})
 }
 
+// ValidateOutput reports whether format is a supported output format.
 func ValidateOutput(format string) error {
 	switch format {
 	case OutputTable, OutputWide, OutputJSON, OutputYAML, OutputName:
@@ -47,13 +52,12 @@ func ValidateOutput(format string) error {
 	}
 }
 
-// IsMachineOutput reports whether the format renders objects rather than a table.
+// IsMachineOutput reports whether format is meant for machines rather than a terminal.
 func IsMachineOutput(format string) bool {
 	return format == OutputJSON || format == OutputYAML
 }
 
-// PrintObject writes obj as JSON or YAML. Callers set TypeMeta first, since a
-// typed object read through a client does not carry its own apiVersion/kind.
+// PrintObject writes obj to w as JSON or YAML.
 func PrintObject(w io.Writer, format string, obj runtime.Object) error {
 	switch format {
 	case OutputJSON:
@@ -75,12 +79,12 @@ func PrintObject(w io.Writer, format string, obj runtime.Object) error {
 	}
 }
 
-// NewTabWriter matches kubectl's column spacing.
+// NewTabWriter returns a tab writer with the column layout used by the table output.
 func NewTabWriter(w io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(w, 6, 4, 3, ' ', 0)
 }
 
-// Age renders a creation timestamp the way kubectl does.
+// Age renders how long ago t was.
 func Age(t metav1.Time) string {
 	if t.IsZero() {
 		return "<unknown>"
@@ -88,7 +92,7 @@ func Age(t metav1.Time) string {
 	return duration.HumanDuration(time.Since(t.Time))
 }
 
-// Since renders an optional timestamp as an age, or a placeholder when unset.
+// Since renders how long ago t was, or <none>.
 func Since(t *metav1.Time) string {
 	if t == nil || t.IsZero() {
 		return "<none>"
@@ -96,7 +100,7 @@ func Since(t *metav1.Time) string {
 	return duration.HumanDuration(time.Since(t.Time)) + " ago"
 }
 
-// FindCondition returns the named condition, or nil.
+// FindCondition returns the condition of the given type, or nil.
 func FindCondition(conds []metav1.Condition, condType string) *metav1.Condition {
 	for i := range conds {
 		if conds[i].Type == condType {
@@ -106,9 +110,7 @@ func FindCondition(conds []metav1.Condition, condType string) *metav1.Condition 
 	return nil
 }
 
-// ConditionStatus renders a condition for a table cell. An absent condition
-// reads as Unknown rather than blank, since the operator may not have looked
-// at the object yet.
+// ConditionStatus returns the status of the given condition type, or Unknown.
 func ConditionStatus(conds []metav1.Condition, condType string) string {
 	if c := FindCondition(conds, condType); c != nil {
 		return string(c.Status)
@@ -130,10 +132,6 @@ func orNone(s string) string {
 	return s
 }
 
-// printer collects write errors so a block of output can be checked once
-// rather than at every call. That keeps the rendering code readable while
-// still surfacing a real failure — a closed pipe from `corg get | head`, say —
-// instead of dropping it.
 type printer struct {
 	w   io.Writer
 	err error
@@ -141,7 +139,6 @@ type printer struct {
 
 func newPrinter(w io.Writer) *printer { return &printer{w: w} }
 
-// Write lets a printer wrap a tabwriter, so tabulated output is checked too.
 func (p *printer) Write(b []byte) (int, error) {
 	if p.err != nil {
 		return 0, p.err
@@ -169,10 +166,8 @@ func (p *printer) println(a ...any) {
 	}
 }
 
-// Err reports the first write error, if any.
 func (p *printer) Err() error { return p.err }
 
-// flushTable flushes a tabwriter, preferring an earlier write error.
 func flushTable(p *printer, tw *tabwriter.Writer) error {
 	if err := p.Err(); err != nil {
 		return err

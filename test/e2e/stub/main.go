@@ -1,15 +1,3 @@
-// Command stub is a minimal in-memory stand-in for the BorgBase GraphQL API,
-// used by the e2e tests.
-//
-// The Repository controller is the half of this operator that talks to an
-// external service, and it is therefore the half no test could previously
-// exercise against a real API server without real BorgBase credentials. This
-// closes that gap: --borgbase-endpoint exists precisely so the operator can be
-// pointed somewhere else.
-//
-// It implements only what the operator calls, and only well enough to be
-// convincing: repoList, repoAdd, repo, repoEdit and repoDelete over one
-// in-memory map.
 package main
 
 import (
@@ -94,7 +82,6 @@ func (s *store) handle(w http.ResponseWriter, r *http.Request) {
 		id, _ := req.Variables["id"].(string)
 		r, ok := s.repos[id]
 		if !ok {
-			// Reported the way BorgBase reports it: an error, not a null.
 			writeErr(w, "Repository not found")
 			return
 		}
@@ -134,8 +121,6 @@ func (s *store) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// apply copies the mutable settings a mutation carried, leaving anything it
-// did not mention alone, which is what the real repoEdit does.
 func apply(r *repo, vars map[string]any) {
 	if v, ok := vars["quota"].(float64); ok {
 		r.Quota = int64(v)

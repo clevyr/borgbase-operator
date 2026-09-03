@@ -7,92 +7,77 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// SourceType selects what a backup source reads from.
+// SourceType is the kind of data a BackupSource backs up.
 // +kubebuilder:validation:Enum=cnpg;mariadb;files
 type SourceType string
 
 const (
-	// SourceTypeCNPG streams a CloudNativePG dump via `dumpdb cnpg`.
+	// SourceTypeCNPG dumps a CloudNativePG database.
 	SourceTypeCNPG SourceType = "cnpg"
-	// SourceTypeMariaDB streams a MariaDB dump via `dumpdb mariadb`.
+
+	// SourceTypeMariaDB dumps a MariaDB database.
 	SourceTypeMariaDB SourceType = "mariadb"
-	// SourceTypeFiles backs up a path on disk.
+
+	// SourceTypeFiles backs up a path on the mounted volume.
 	SourceTypeFiles SourceType = "files"
 )
 
-// DatabaseEngine selects how database credentials are wired into the backup pod.
+// DatabaseEngine is the database a DatabaseSpec connects to.
 // +kubebuilder:validation:Enum=cnpg;mariadb
 type DatabaseEngine string
 
 const (
-	// DatabaseEngineCNPG mounts a CloudNativePG app Secret; `dumpdb cnpg` reads
-	// the connection details out of it, so no DB_* env is needed.
+	// DatabaseEngineCNPG is CloudNativePG.
 	DatabaseEngineCNPG DatabaseEngine = "cnpg"
-	// DatabaseEngineMariaDB mounts a MariaDB Secret and additionally requires
-	// DB_HOST, DB_DATABASE and DB_USERNAME in the environment.
+
+	// DatabaseEngineMariaDB is MariaDB.
 	DatabaseEngineMariaDB DatabaseEngine = "mariadb"
 )
 
-// DBSecretMountPath is where the operator mounts the database credentials
-// Secret.
-//
-// The operator passes this to dumpdb and restoredb as --secret-mount, so it is
-// the operator's own choice. Relying on their per-engine defaults instead would
-// make the path an unwritten contract between two repositories, breakable by a
-// change in either with no way for the other to notice.
+// DBSecretMountPath is where the database credentials Secret is mounted in the backup container.
 const DBSecretMountPath = "/var/run/secrets/borgbase/database"
 
-// Default names of the Secret holding database credentials, matching what the
-// hand-written backups this operator replaces already use.
 const (
 	defaultCNPGSecretName    = "postgresql-app"
 	defaultMariaDBSecretName = "mariadb"
 )
 
-// Condition types reported on a ScheduledBackup.
 const (
-	// ScheduledBackupConditionReady is true once the CronJob has been created
-	// and its Repository is initialized.
+	// ScheduledBackupConditionReady reports whether the backup is scheduled and runnable.
 	ScheduledBackupConditionReady = "Ready"
 )
 
-// BackupSource is one thing to back up. Sources render, in order, into the
-// backup script as individual `restic backup` invocations.
+// BackupSource is one thing to back up on each run.
 // +kubebuilder:validation:XValidation:rule="self.type == 'files' ? (!has(self.database) && !has(self.extraArgs)) : (!has(self.path) && !has(self.exclude))",message="path and exclude are only valid for files sources; database and extraArgs only for database sources"
 type BackupSource struct {
-	// type selects what this source reads.
+	// Type is the kind of data this source backs up.
 	// +required
 	Type SourceType `json:"type"`
 
-	// tag is the restic tag applied to snapshots from this source. Defaults to
-	// "db" for database sources and "files" for file sources.
+	// Tag is the restic tag for this source's snapshots. Defaults to "files" or "db".
 	// +kubebuilder:validation:MaxLength=64
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_.-]+$`
 	// +optional
 	Tag string `json:"tag,omitempty"`
 
-	// path is the file or directory to back up, relative to the working
-	// directory. Only valid when type is "files". Defaults to ".".
+	// Path is the directory to back up, relative to the volume mount. Files sources only.
 	// +optional
 	Path string `json:"path,omitempty"`
 
-	// exclude lists restic --exclude patterns. Only valid when type is "files".
+	// Exclude is a list of restic exclude patterns. Files sources only.
 	// +optional
 	Exclude []string `json:"exclude,omitempty"`
 
-	// database names a specific database to dump instead of the default. Only
-	// valid for database sources.
+	// Database is the database name to dump. Database sources only.
 	// +optional
 	Database string `json:"database,omitempty"`
 
-	// extraArgs are appended verbatim to the dump command, after a `--`
-	// separator, for flags the dump tool passes through to the client. They are
-	// not quoted: this is a passthrough, so the caller owns the quoting.
+	// ExtraArgs is passed to the dump command. Database sources only.
 	// +optional
 	ExtraArgs []string `json:"extraArgs,omitempty"`
 }
 
-// EffectiveTag returns the restic tag for this source.
+// EffectiveTag returns the restic tag to use for this source.
 func (s BackupSource) EffectiveTag() string {
 	if s.Tag != "" {
 		return s.Tag
@@ -103,7 +88,7 @@ func (s BackupSource) EffectiveTag() string {
 	return "db"
 }
 
-// EffectivePath returns the path a files source backs up.
+// EffectivePath returns the path to back up.
 func (s BackupSource) EffectivePath() string {
 	if s.Path != "" {
 		return s.Path
@@ -111,70 +96,65 @@ func (s BackupSource) EffectivePath() string {
 	return "."
 }
 
-// Retention configures `restic forget --prune`. Every unset field is omitted
-// from the command, so at least one must be set.
+// Retention is how many snapshots restic forget keeps.
 // +kubebuilder:validation:XValidation:rule="has(self.last) || has(self.hourly) || has(self.daily) || has(self.weekly) || has(self.monthly) || has(self.yearly)",message="at least one retention field must be set; omit retention entirely to skip forgetting"
 type Retention struct {
-	// last keeps the N most recent snapshots regardless of age.
+	// Last keeps the n most recent snapshots.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	Last *int32 `json:"last,omitempty"`
 
-	// hourly keeps the last N hourly snapshots.
+	// Hourly keeps the last snapshot of each of the n most recent hours.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	Hourly *int32 `json:"hourly,omitempty"`
 
-	// daily keeps the last N daily snapshots.
+	// Daily keeps the last snapshot of each of the n most recent days.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	Daily *int32 `json:"daily,omitempty"`
 
-	// weekly keeps the last N weekly snapshots.
+	// Weekly keeps the last snapshot of each of the n most recent weeks.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	Weekly *int32 `json:"weekly,omitempty"`
 
-	// monthly keeps the last N monthly snapshots.
+	// Monthly keeps the last snapshot of each of the n most recent months.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	Monthly *int32 `json:"monthly,omitempty"`
 
-	// yearly keeps the last N yearly snapshots.
+	// Yearly keeps the last snapshot of each of the n most recent years.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	Yearly *int32 `json:"yearly,omitempty"`
 }
 
-// DatabaseSpec wires database credentials into the backup pod.
+// DatabaseSpec is the database the backup container connects to.
 // +kubebuilder:validation:XValidation:rule="self.engine != 'mariadb' || (has(self.host) && has(self.name) && has(self.user))",message="host, name and user are required for the mariadb engine"
 type DatabaseSpec struct {
-	// engine selects the credential wiring.
+	// Engine is the database to connect to.
 	// +required
 	Engine DatabaseEngine `json:"engine"`
 
-	// secretName is the Secret holding the credentials. Defaults to
-	// "postgresql-app" for cnpg and "mariadb" for mariadb.
-	//
-	// Whatever it is called, it is mounted at DBSecretMountPath, which the
-	// operator also passes to the dump and restore tools as --secret-mount.
+	// SecretName holds the credentials. Defaults to "postgresql-app" for cnpg and "mariadb" for mariadb.
 	// +optional
 	SecretName string `json:"secretName,omitempty"`
 
-	// host sets DB_HOST. Required for mariadb, unused for cnpg.
+	// Host is the database host. Required for mariadb.
 	// +optional
 	Host string `json:"host,omitempty"`
 
-	// name sets DB_DATABASE. Required for mariadb, unused for cnpg.
+	// Name is the default database. Required for mariadb.
 	// +optional
 	Name string `json:"name,omitempty"`
 
-	// user sets DB_USERNAME. Required for mariadb, unused for cnpg.
+	// User is the database user. Required for mariadb.
 	// +optional
 	User string `json:"user,omitempty"`
 }
 
-// EffectiveSecretName returns the Secret mounted for the dump tool.
+// EffectiveSecretName returns the Secret holding the database credentials.
 func (d *DatabaseSpec) EffectiveSecretName() string {
 	if d.SecretName != "" {
 		return d.SecretName
@@ -185,33 +165,28 @@ func (d *DatabaseSpec) EffectiveSecretName() string {
 	return defaultCNPGSecretName
 }
 
-// MountPath returns where the credentials Secret is mounted.
-//
-// The same path is passed to the dump and restore tools, so it holds however
-// the Secret is named and whatever those tools default to.
+// MountPath returns where the database credentials Secret is mounted.
 func (d *DatabaseSpec) MountPath() string {
 	return DBSecretMountPath
 }
 
-// VolumeSpec attaches an existing PersistentVolumeClaim to back up files from.
+// VolumeSpec is an existing PVC to mount into the backup container.
 type VolumeSpec struct {
-	// existingClaim is the name of a PVC in this namespace.
+	// ExistingClaim is the name of the PersistentVolumeClaim to mount.
 	// +required
 	ExistingClaim string `json:"existingClaim"`
 
-	// mountPath is where the claim is mounted, which is also the working
-	// directory for file sources. Defaults to "/<existingClaim>".
+	// MountPath is where to mount the claim. Defaults to /<existingClaim>.
 	// +kubebuilder:validation:XValidation:rule="self != '/cache'",message="mountPath must not be /cache, which is where the restic cache volume is mounted"
 	// +optional
 	MountPath string `json:"mountPath,omitempty"`
 
-	// readOnly mounts the claim read-only. Off by default because RWO claims
-	// shared with the app cannot always be remounted read-only.
+	// ReadOnly mounts the claim read-only.
 	// +optional
 	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
-// EffectiveMountPath returns where the claim is mounted.
+// EffectiveMountPath returns where the volume is mounted.
 func (v *VolumeSpec) EffectiveMountPath() string {
 	if v.MountPath != "" {
 		return v.MountPath
@@ -219,308 +194,242 @@ func (v *VolumeSpec) EffectiveMountPath() string {
 	return "/" + v.ExistingClaim
 }
 
-// CacheSpec configures the restic cache volume. A persistent cache makes
-// `restic forget --prune` dramatically cheaper.
+// CacheSpec is the PVC backing restic's cache.
 type CacheSpec struct {
-	// enabled turns the cache PVC on. Defaults to true. Setting it to false
-	// deletes a cache PVC the operator created.
+	// Enabled turns the cache volume on. Defaults to the operator's setting.
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 
-	// storageClass for the cache PVC.
+	// StorageClass for the cache claim. Defaults to the operator's setting.
 	// +optional
 	StorageClass string `json:"storageClass,omitempty"`
 
-	// size of the cache PVC.
+	// Size of the cache claim.
 	// +kubebuilder:default:="1Gi"
 	// +optional
 	Size string `json:"size,omitempty"`
 
-	// accessMode for the cache PVC.
+	// AccessMode for the cache claim.
 	// +kubebuilder:default:="ReadWriteMany"
 	// +optional
 	AccessMode corev1.PersistentVolumeAccessMode `json:"accessMode,omitempty"`
 }
 
-// HealthchecksSpec configures dead-man's-switch reporting via runitor.
-//
-// The operator itself never calls the healthchecks API. runitor pings
-// <apiURL>/<pingKey>/<slug>?create=1, and healthchecks auto-provisions the
-// check on first ping, attaching the project's notification channels.
+// HealthchecksSpec configures Healthchecks.io pings around each run.
 type HealthchecksSpec struct {
-	// enabled turns healthchecks reporting on for this backup. Defaults to the
-	// operator's --healthchecks-enabled setting.
+	// Enabled turns pinging on. Defaults to the operator's setting.
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 
-	// pingKeySecretRef points at a Secret in this namespace holding the ping
-	// key of the healthchecks project this backup reports to.
-	//
-	// There is deliberately no cluster-wide default: separate client projects
-	// have separate ping keys, and a shared one would file checks into the
-	// wrong project.
+	// PingKeySecretRef holds the project ping key. Used with slug.
 	// +optional
 	PingKeySecretRef *corev1.SecretKeySelector `json:"pingKeySecretRef,omitempty"`
 
-	// slug identifies the check within the project. Defaults to the namespace.
-	//
-	// Two backups in one namespace must therefore set distinct slugs; the
-	// operator reports SlugConflict otherwise, because sharing a check would
-	// let one backup's success mask the other's failure.
+	// Slug is the check slug to ping. Defaults to the namespace.
 	// +kubebuilder:validation:Pattern=`^[a-z0-9_-]+$`
 	// +kubebuilder:validation:MaxLength=100
 	// +optional
 	Slug string `json:"slug,omitempty"`
 
-	// create auto-provisions the check on first ping. Defaults to the
-	// operator's --healthchecks-auto-create setting.
+	// Create makes runitor create the check on first ping. Ignored when pinging by UUID.
 	// +optional
 	Create *bool `json:"create,omitempty"`
 
-	// apiURL overrides the operator's healthchecks ping endpoint.
+	// APIURL overrides the Healthchecks endpoint.
 	// +optional
 	APIURL string `json:"apiURL,omitempty"`
 
-	// uuidSecretRef pings a check by UUID instead of by slug. This is the
-	// escape hatch for adopting a check that cannot be given a slug; prefer
-	// backfilling the slug so the ping path stays uniform.
+	// UUIDSecretRef holds a check UUID to ping directly, instead of slug and ping key.
 	// +optional
 	UUIDSecretRef *corev1.SecretKeySelector `json:"uuidSecretRef,omitempty"`
 }
 
-// ScheduledBackupSpec defines the desired state of ScheduledBackup.
+// ScheduledBackupSpec defines the desired state of a ScheduledBackup.
 type ScheduledBackupSpec struct {
-	// repositoryRef names the Repository in this namespace to back up into.
+	// RepositoryRef is the Repository in this namespace to back up into.
 	// +required
 	RepositoryRef corev1.LocalObjectReference `json:"repositoryRef"`
 
-	// schedule is either a standard five-field cron expression, used verbatim,
-	// or one of the shorthands "@hourly", "@daily" (or "@midnight"), "@weekly",
-	// "@monthly", "@yearly" (or "@annually"), "@every <duration>". Shorthands
-	// are jittered from a hash of this resource's identity so that copy-pasted
-	// backups do not stampede; the result is reported in
-	// status.effectiveSchedule.
+	// Schedule is a cron expression, or a shorthand such as @daily or @every 6h.
 	// +required
 	Schedule string `json:"schedule"`
 
-	// timeZone for the schedule and for the container's TZ.
+	// TimeZone the schedule is interpreted in.
 	// +kubebuilder:default:="America/Chicago"
 	// +optional
 	TimeZone string `json:"timeZone,omitempty"`
 
-	// suspend pauses this backup. The CronJob is kept but suspended.
+	// Suspend stops new backups without deleting the resource.
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
 
-	// concurrencyPolicy for the generated CronJob.
+	// ConcurrencyPolicy decides what happens when a run overlaps the previous one.
 	// +kubebuilder:validation:Enum=Allow;Forbid;Replace
 	// +kubebuilder:default:=Forbid
 	// +optional
 	ConcurrencyPolicy batchv1.ConcurrencyPolicy `json:"concurrencyPolicy,omitempty"`
 
-	// image overrides the backup image. It must provide restic, runitor, ts
-	// and dumpdb. Defaults to the operator's --backup-image setting.
+	// Image overrides the backup container image.
 	// +optional
 	Image string `json:"image,omitempty"`
 
-	// sources lists what to back up. Mutually exclusive with script.
+	// Sources is what to back up. Mutually exclusive with script.
 	// +kubebuilder:validation:MinItems=1
 	// +optional
 	Sources []BackupSource `json:"sources,omitempty"`
 
-	// script replaces the generated backup body wholesale. The operator still
-	// wraps it with runitor, timestamping and `set -eu`, and still injects the
-	// environment, mounts and retention-free defaults; everything between the
-	// preamble and `restic cache --cleanup` is yours. Mutually exclusive with
-	// sources.
+	// Script is a shell script to run instead of sources. Mutually exclusive with sources.
 	// +optional
 	Script string `json:"script,omitempty"`
 
-	// retention configures `restic forget --prune` after the backup. Omit to
-	// skip forgetting entirely.
+	// Retention is how many snapshots to keep. Omit to never forget.
 	// +optional
 	Retention *Retention `json:"retention,omitempty"`
 
-	// retryLock is how long restic waits for the repository lock before giving
-	// up. Pruning takes an exclusive lock, so without this a backup that
-	// overlaps a prune fails outright rather than waiting its turn. That
-	// happens whenever two schedules share a repository, which is exactly the
-	// state an app is in while it is being migrated onto this operator.
-	//
-	// Set it to 0 to pass no flag at all, restoring restic's default of
-	// failing immediately.
+	// RetryLock is how long restic waits for a lock held by another run.
 	// +kubebuilder:default:="5m"
 	// +kubebuilder:validation:XValidation:rule="self == '0' || self.matches('^([0-9]+([.][0-9]+)?(ns|us|ms|s|m|h))+$')",message="must be a Go duration such as 30m, 1h or 1h30m"
 	// +optional
 	RetryLock *metav1.Duration `json:"retryLock,omitempty"`
 
-	// env adds environment variables to the backup container. Intended as the
-	// companion to script; typed fields cover the common cases.
-	//
-	// Entries take precedence over everything the operator sets, including
-	// RESTIC_REPOSITORY and RESTIC_PASSWORD from the credentials Secret, since
-	// a container's env overrides its envFrom.
+	// Env is extra environment variables for the backup container.
 	// +optional
 	Env map[string]string `json:"env,omitempty"`
 
-	// database wires database credentials into the backup pod.
+	// Database is the database to connect to. Required by database sources.
 	// +optional
 	Database *DatabaseSpec `json:"database,omitempty"`
 
-	// volume attaches an existing claim to back up files from.
+	// Volume is the PVC to mount. Required by files sources.
 	// +optional
 	Volume *VolumeSpec `json:"volume,omitempty"`
 
-	// cache configures the restic cache volume.
+	// Cache configures restic's cache volume.
 	// +optional
 	Cache *CacheSpec `json:"cache,omitempty"`
 
-	// healthchecks configures dead-man's-switch reporting.
+	// Healthchecks configures Healthchecks.io pings.
 	// +optional
 	Healthchecks *HealthchecksSpec `json:"healthchecks,omitempty"`
 
-	// affinity overrides the derived pod affinity. By default the backup pod is
-	// scheduled next to the data it reads: hard affinity to the app when a
-	// volume is attached, hard affinity to mariadb, or soft affinity to the
-	// CloudNativePG primary.
-	//
-	// The derived rules encode a fleet labelling convention: the app's pods are
-	// expected to carry app.kubernetes.io/name=<namespace> and
-	// app.kubernetes.io/controller=app, and mariadb's to carry
-	// app.kubernetes.io/name=mariadb. Set this field for anything labelled
-	// differently, or the backup pod will not schedule.
+	// Affinity for the backup pod.
 	// +optional
 	Affinity *corev1.Affinity `json:"affinity,omitempty"`
 
-	// podSecurityContext replaces the backup pod's security context, which by
-	// default sets only the RuntimeDefault seccomp profile.
-	//
-	// No user or group id is imposed by default, because the backup has to read
-	// the app's data and its ownership varies per app and per cluster; an
-	// fsGroup would also chown that data as a side effect. Set this to run as a
-	// particular user, or to satisfy a namespace enforcing the restricted Pod
-	// Security Standard. It replaces the default wholesale, so repeat anything
-	// you still want.
+	// PodSecurityContext for the backup pod.
 	// +optional
 	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
 
-	// containerSecurityContext replaces the backup container's security
-	// context. The default drops every capability and forbids privilege
-	// escalation, which restic never needs.
-	//
-	// Set it to add readOnlyRootFilesystem, which is left off by default
-	// because where the image and the dump tools write is their business.
+	// ContainerSecurityContext for the backup container.
 	// +optional
 	ContainerSecurityContext *corev1.SecurityContext `json:"containerSecurityContext,omitempty"`
 
-	// podLabels adds labels to the backup pod, for network policies and the
-	// like. The mariadb-client label is added automatically for mariadb.
+	// PodLabels to add to the backup pod.
 	// +optional
 	PodLabels map[string]string `json:"podLabels,omitempty"`
 
-	// resources for the backup container.
+	// Resources for the backup container.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
-	// successfulJobsHistoryLimit for the generated CronJob.
+	// SuccessfulJobsHistoryLimit is how many completed Jobs to keep.
 	// +kubebuilder:default:=3
 	// +optional
 	SuccessfulJobsHistoryLimit *int32 `json:"successfulJobsHistoryLimit,omitempty"`
 
-	// failedJobsHistoryLimit for the generated CronJob.
+	// FailedJobsHistoryLimit is how many failed Jobs to keep.
 	// +kubebuilder:default:=1
 	// +optional
 	FailedJobsHistoryLimit *int32 `json:"failedJobsHistoryLimit,omitempty"`
 }
 
-// ScheduledBackupStatus defines the observed state of ScheduledBackup.
+// ScheduledBackupStatus is the observed state of a ScheduledBackup.
 type ScheduledBackupStatus struct {
-	// conditions represent the current state of the ScheduledBackup resource.
+	// Conditions holds the latest observations of the backup's state.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// observedGeneration is the .metadata.generation this status was computed from.
+	// ObservedGeneration is the spec generation this status was computed from.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// effectiveSchedule is the cron expression actually given to the CronJob,
-	// after jitter is applied.
+	// EffectiveSchedule is the cron expression the shorthand resolved to.
 	// +optional
 	EffectiveSchedule string `json:"effectiveSchedule,omitempty"`
 
-	// lastScheduleTime is when the CronJob last started a backup.
+	// LastScheduleTime is when a backup was last started.
 	// +optional
 	LastScheduleTime *metav1.Time `json:"lastScheduleTime,omitempty"`
 
-	// lastSuccessfulTime is when a backup last completed successfully.
+	// LastSuccessfulTime is when a backup last succeeded.
 	// +optional
 	LastSuccessfulTime *metav1.Time `json:"lastSuccessfulTime,omitempty"`
 
-	// active is the number of currently running backup jobs.
+	// Active is how many backups are running.
 	// +optional
 	Active int32 `json:"active,omitempty"`
 
-	// lastTriggerTime is the trigger annotation the operator has already acted
-	// on. A trigger newer than this starts a run; re-reconciling the same one
-	// does not.
+	// LastTriggerTime is the trigger-at annotation this operator has already acted on.
 	// +optional
 	LastTriggerTime *metav1.Time `json:"lastTriggerTime,omitempty"`
 
-	// lastTriggerJob is the Job created for the last honoured trigger, or empty
-	// if the trigger was skipped.
+	// LastTriggerJob is the Job the last trigger created.
 	// +optional
 	LastTriggerJob string `json:"lastTriggerJob,omitempty"`
 
-	// history is the most recent runs, newest first. Jobs are removed an hour
-	// after they finish and pruned by the history limits, so recording them
-	// here is the only durable record of whether backups have been working.
+	// History is the most recent runs, newest first.
 	// +listType=atomic
 	// +optional
 	History []BackupRun `json:"history,omitempty"`
 }
 
-// BackupRunResult is the outcome of a single run.
+// BackupRunResult is how a run ended.
 // +kubebuilder:validation:Enum=Running;Succeeded;Failed
 type BackupRunResult string
 
 const (
-	BackupRunRunning   BackupRunResult = "Running"
+	// BackupRunRunning means the run has not finished.
+	BackupRunRunning BackupRunResult = "Running"
+	// BackupRunSucceeded means the run completed.
 	BackupRunSucceeded BackupRunResult = "Succeeded"
-	BackupRunFailed    BackupRunResult = "Failed"
+	// BackupRunFailed means the run failed.
+	BackupRunFailed BackupRunResult = "Failed"
 )
 
-// BackupRunTrigger is what caused a run.
+// BackupRunTrigger is what started a run.
 // +kubebuilder:validation:Enum=Scheduled;Manual
 type BackupRunTrigger string
 
 const (
+	// BackupTriggerScheduled means the CronJob started the run.
 	BackupTriggerScheduled BackupRunTrigger = "Scheduled"
-	BackupTriggerManual    BackupRunTrigger = "Manual"
+	// BackupTriggerManual means the trigger-at annotation started the run.
+	BackupTriggerManual BackupRunTrigger = "Manual"
 )
 
-// BackupRun is one recorded backup attempt.
+// BackupRun is one entry in the run history.
 type BackupRun struct {
-	// jobName is the Job that ran it. It may no longer exist.
+	// JobName is the Job that ran the backup.
 	JobName string `json:"jobName"`
 
-	// trigger is what started the run.
+	// Trigger is what started the run.
 	Trigger BackupRunTrigger `json:"trigger"`
 
-	// result is the outcome. Running entries are updated in place as the run
-	// finishes.
+	// Result is how the run ended.
 	Result BackupRunResult `json:"result"`
 
-	// startTime is when the run's Job started.
+	// StartTime is when the run started.
 	// +optional
 	StartTime *metav1.Time `json:"startTime,omitempty"`
 
-	// completionTime is when it finished, absent while it is still running.
+	// CompletionTime is when the run finished.
 	// +optional
 	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
 }
 
+// ScheduledBackup is a recurring restic backup into a Repository.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Schedule",type="string",JSONPath=".status.effectiveSchedule"
@@ -530,25 +439,20 @@ type BackupRun struct {
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:validation:XValidation:rule="has(self.spec.sources) != has(self.spec.script)",message="exactly one of spec.sources or spec.script must be set"
 // +kubebuilder:validation:XValidation:rule="!has(self.spec.sources) || !self.spec.sources.exists(s, s.type == 'files') || has(self.spec.volume)",message="a files source needs spec.volume; without it restic would back up the container's own filesystem"
-
-// ScheduledBackup is the Schema for the scheduledbackups API.
 type ScheduledBackup struct {
 	metav1.TypeMeta `json:",inline"`
 
-	// metadata is a standard object metadata
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitzero"`
 
-	// spec defines the desired state of ScheduledBackup
 	// +required
 	Spec ScheduledBackupSpec `json:"spec"`
 
-	// status defines the observed state of ScheduledBackup
 	// +optional
 	Status ScheduledBackupStatus `json:"status,omitzero"`
 }
 
-// Slug returns the healthchecks check slug for this backup.
+// Slug returns the Healthchecks check slug to ping.
 func (s *ScheduledBackup) Slug() string {
 	if s.Spec.Healthchecks != nil && s.Spec.Healthchecks.Slug != "" {
 		return s.Spec.Healthchecks.Slug
@@ -556,9 +460,8 @@ func (s *ScheduledBackup) Slug() string {
 	return s.Namespace
 }
 
+// ScheduledBackupList is a list of ScheduledBackup.
 // +kubebuilder:object:root=true
-
-// ScheduledBackupList contains a list of ScheduledBackup
 type ScheduledBackupList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`

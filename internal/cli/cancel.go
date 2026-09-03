@@ -61,7 +61,7 @@ func runCancel(ctx context.Context, c client.Client, out io.Writer, sb *borgbase
 		if !jobIsRunning(&jobs[i]) {
 			continue
 		}
-		// Background propagation, or the pod outlives the Job.
+
 		err := c.Delete(ctx, &jobs[i], client.PropagationPolicy(metav1.DeletePropagationBackground))
 		if err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("deleting job/%s: %w", jobs[i].Name, err)
@@ -153,8 +153,6 @@ func runWait(
 	err = wait.PollUntilContextTimeout(ctx, pollInterval, timeout, true,
 		func(ctx context.Context) (bool, error) {
 			if err := c.Get(ctx, key, &final); err != nil {
-				// A Job deleted mid-wait, by `corg cancel` or the TTL, is a
-				// finished wait rather than an error.
 				return apierrors.IsNotFound(err), client.IgnoreNotFound(err)
 			}
 			return !jobIsRunning(&final), nil

@@ -12,18 +12,17 @@ import (
 	"github.com/clevyr/borgbase-operator/internal/cli/runner"
 )
 
-// defaultResticTimeout bounds an ephemeral run. A check or a prune over a large
-// repository is slow, so this is generous.
 const (
 	defaultResticTimeout = time.Hour
 
-	// cleanupTimeout bounds the detached work that undoes a cancelled restore.
 	cleanupTimeout = 30 * time.Second
 )
 
+// ErrNoBackupForRepository means no backup references the repository, so there is no
+// CronJob to derive a Job from.
 var ErrNoBackupForRepository = errors.New("no ScheduledBackup uses this repository")
 
-// Runner builds a runner from the factory's clients.
+// Runner returns a Runner backed by this Factory's clients.
 func (f *Factory) Runner() (*runner.Runner, error) {
 	c, err := f.Client()
 	if err != nil {
@@ -40,12 +39,6 @@ func (f *Factory) Runner() (*runner.Runner, error) {
 	return &runner.Runner{Client: c, Clientset: cs, RESTConfig: cfg}, nil
 }
 
-// resolveRunTarget finds the ScheduledBackup whose environment a restic command
-// should borrow.
-//
-// Repository-scoped commands still need one: the credentials, image, and
-// network placement all come from a backup's rendered CronJob, which is the
-// only place the operator's resolved configuration exists.
 func resolveRunTarget(
 	ctx context.Context, c client.Client, namespace, arg string,
 ) (*borgbasev1.ScheduledBackup, *borgbasev1.Repository, error) {
@@ -77,8 +70,6 @@ func resolveRunTarget(
 		ErrNoBackupForRepository, repo.Name)
 }
 
-// sourceTags are the tags a ScheduledBackup writes, used to show only its own
-// snapshots in a repository that may serve several backups.
 func sourceTags(sb *borgbasev1.ScheduledBackup) []string {
 	seen := map[string]bool{}
 	var tags []string
@@ -92,13 +83,10 @@ func sourceTags(sb *borgbasev1.ScheduledBackup) []string {
 	return tags
 }
 
-// resticCommand builds the argv for a restic invocation inside the backup
-// image. The image's restic wrapper is on PATH as `restic`.
 func resticCommand(args ...string) []string {
 	return append([]string{"restic"}, args...)
 }
 
-// runRestic is the shared path for every read-only restic subcommand.
 func runRestic(
 	ctx context.Context,
 	f *Factory,

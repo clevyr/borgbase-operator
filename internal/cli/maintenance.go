@@ -10,8 +10,7 @@ import (
 	"github.com/clevyr/borgbase-operator/internal/cli/runner"
 )
 
-// ErrAppendOnly is returned when a prune is attempted against a repository that
-// cannot accept one.
+// ErrAppendOnly means the operation would delete data the repository will not let go of.
 var ErrAppendOnly = errors.New("repository is append-only")
 
 func newUnlockCommand(f *Factory) *cobra.Command {
@@ -30,7 +29,6 @@ Only locks restic considers stale are removed. Use --remove-all to remove them
 all, which is safe only when nothing is running.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Removing a live lock while a backup holds it corrupts that run.
 			if removeAll {
 				if err := confirm(f, yes, "every lock on the repository, including live ones", args[0]); err != nil {
 					return err
@@ -98,7 +96,6 @@ Backups already prune themselves after each run, so this is for reclaiming
 space after a retention change rather than routine upkeep.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// forget --prune deletes snapshots; there is no undo.
 			if !dryRun {
 				if err := confirm(f, yes, "snapshots outside the retention policy, permanently", args[0]); err != nil {
 					return err
@@ -106,8 +103,6 @@ space after a retention change rather than routine upkeep.`,
 			}
 			return runRestic(cmd.Context(), f, args[0], "prune",
 				func(sb *borgbasev1.ScheduledBackup, repo *borgbasev1.Repository) ([]string, error) {
-					// restic cannot delete from an append-only repository, so
-					// the run would fail well into the operation.
 					if repo.Spec.AppendOnly {
 						return nil, fmt.Errorf(
 							"%w: repository/%s cannot forget or prune; clear spec.appendOnly first",
@@ -136,8 +131,6 @@ space after a retention change rather than routine upkeep.`,
 	return cmd
 }
 
-// retentionFlags mirrors the flags the backup script uses, so a manual prune
-// applies exactly the policy the scheduled one does.
 func retentionFlags(r *borgbasev1.Retention) []string {
 	if r == nil {
 		return nil

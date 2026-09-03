@@ -8,8 +8,6 @@ import (
 	borgbasev1 "github.com/clevyr/borgbase-operator/api/v1"
 )
 
-// The CronJob and a one-off run must stay the same work. If they ever diverge,
-// a manual backup would quietly differ from the scheduled one it stands in for.
 func TestCronJobUsesBuildJobTemplate(t *testing.T) {
 	cases := map[string]func(*borgbasev1.ScheduledBackup){
 		"defaults": nil,
@@ -48,8 +46,6 @@ func TestCronJobUsesBuildJobTemplate(t *testing.T) {
 	}
 }
 
-// A one-off run needs the managed-by label or the manager's label-filtered Job
-// cache never sees it, and the run goes missing from history.
 func TestJobTemplateCarriesManagedByLabel(t *testing.T) {
 	tmpl, err := BuildJobTemplate(testBackup(nil), testRepo(), testConfig())
 	if err != nil {

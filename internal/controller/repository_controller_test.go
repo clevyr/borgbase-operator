@@ -31,7 +31,6 @@ const (
 	tokenNS    = "borgbase-system"
 	tokenName  = "borgbase-api"
 
-	// adoptedRepoID is the BorgBase ID used wherever a test adopts a repo.
 	adoptedRepoID = "a1b2c3d4"
 )
 
@@ -47,7 +46,6 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-// newHarness wires a reconciler against a fake cluster and a fake BorgBase.
 func newHarness(t *testing.T, api *fakeAPI, objs ...client.Object) (*RepositoryReconciler, client.Client) {
 	t.Helper()
 	scheme := testScheme(t)
@@ -107,9 +105,6 @@ func getSecret(t *testing.T, c client.Client, name string) *corev1.Secret {
 	return &s
 }
 
-// A generated password is the encryption key for every snapshot. Once written
-// it must survive any number of reconciles unchanged; regenerating it would
-// silently orphan every existing backup.
 func TestPasswordIsGeneratedOnceAndNeverRotated(t *testing.T) {
 	api := newFakeAPI()
 	r, c := newHarness(t, api, repositoryFixture(nil))
@@ -127,9 +122,6 @@ func TestPasswordIsGeneratedOnceAndNeverRotated(t *testing.T) {
 	}
 }
 
-// Adoption must never fall back to creating a repository: a mistyped ID that
-// silently provisioned an empty repo would look healthy while backing up
-// nothing, and the real backups would stop being written to.
 func TestAdoptionNeverCreates(t *testing.T) {
 	api := newFakeAPI(&borgbase.Repo{
 		ID: adoptedRepoID, Name: testNS, Format: borgbase.FormatRestic,
@@ -163,8 +155,6 @@ func TestAdoptionNeverCreates(t *testing.T) {
 		t.Errorf("RESTIC_REPOSITORY = %q, want %q", got, want)
 	}
 
-	// The seed Secret is the only off-cluster copy of the password, so the
-	// operator must leave it exactly as it found it.
 	var afterSeed corev1.Secret
 	if err := c.Get(context.Background(),
 		types.NamespacedName{Namespace: testNS, Name: seedSecret}, &afterSeed); err != nil {
@@ -175,9 +165,6 @@ func TestAdoptionNeverCreates(t *testing.T) {
 	}
 }
 
-// A repository that already holds data, but whose password we do not have,
-// must fail loudly rather than being handed a fresh password that cannot
-// decrypt anything already in it.
 func TestRefusesToInventPasswordForNonEmptyRepository(t *testing.T) {
 	api := newFakeAPI(&borgbase.Repo{
 		ID: testRepoID, Name: testNS, Format: borgbase.FormatRestic,
@@ -195,8 +182,6 @@ func TestRefusesToInventPasswordForNonEmptyRepository(t *testing.T) {
 	}
 }
 
-// A non-restic repository can never be corrected, because BorgBase fixes the
-// format at creation. It must be a hard failure, not a silently broken URL.
 func TestRejectsNonResticRepository(t *testing.T) {
 	api := newFakeAPI(&borgbase.Repo{
 		ID: "borgrepo", Name: "myapp-prod", Format: "borg", Htpasswd: "t",
@@ -236,8 +221,7 @@ func TestCreatesRepositoryAndInitJob(t *testing.T) {
 		t.Fatalf("expected an init job: %v", err)
 	}
 	container := job.Spec.Template.Spec.Containers[0]
-	// Probing before initializing keeps genuine failures visible, unlike the
-	// `restic init || true` this replaces.
+
 	want := "restic cat config >/dev/null 2>&1 || restic init"
 	if got := container.Command[len(container.Command)-1]; got != want {
 		t.Errorf("init command = %q, want %q", got, want)
@@ -245,28 +229,21 @@ func TestCreatesRepositoryAndInitJob(t *testing.T) {
 	if container.EnvFrom[0].SecretRef.Name != "restic-borgbase" {
 		t.Errorf("init job reads the wrong secret: %s", container.EnvFrom[0].SecretRef.Name)
 	}
-	// The Job never calls the API server, so a mounted token is needless
-	// exposure of the namespace's default ServiceAccount.
+
 	if automount := job.Spec.Template.Spec.AutomountServiceAccountToken; automount == nil || *automount {
 		t.Error("init job should not mount a service account token")
 	}
-	// Capabilities are safe to drop unconditionally; a user id is not, since
-	// the same image has to work across clusters.
+
 	if sc := container.SecurityContext; sc == nil || sc.Capabilities == nil ||
 		len(sc.Capabilities.Drop) == 0 {
 		t.Error("init container should drop all capabilities")
 	}
-	// Requests keep the pod out of BestEffort, which would make it the first
-	// thing evicted and leave the repository stuck uninitialized.
+
 	if container.Resources.Requests.Cpu().IsZero() || container.Resources.Requests.Memory().IsZero() {
 		t.Error("init job should set resource requests")
 	}
 }
 
-// A finished init Job should not linger as a Completed pod waiting for its TTL.
-// It is removed on the pass after initialization is recorded, not the same one:
-// deleting it immediately fires a watch event that can be handled before the
-// status write lands, and that reconcile would start a second Job.
 func TestSucceededInitJobIsRemovedOnTheNextPass(t *testing.T) {
 	api := newFakeAPI()
 	r, c := newHarness(t, api, repositoryFixture(nil))
@@ -278,13 +255,11 @@ func TestSucceededInitJobIsRemovedOnTheNextPass(t *testing.T) {
 		t.Fatalf("expected an init job: %v", err)
 	}
 
-	// Mark it succeeded, as the Job controller would.
 	job.Status.Succeeded = 1
 	if err := c.Status().Update(context.Background(), &job); err != nil {
 		t.Fatal(err)
 	}
 
-	// First pass records initialization and leaves the Job alone.
 	reconcileN(t, r, 1)
 	var repo borgbasev1.Repository
 	if err := c.Get(context.Background(),
@@ -298,21 +273,17 @@ func TestSucceededInitJobIsRemovedOnTheNextPass(t *testing.T) {
 		t.Errorf("init job should survive the pass that records success: %v", err)
 	}
 
-	// The next pass, with Initialized already persisted, removes it.
 	reconcileN(t, r, 1)
 	if err := c.Get(context.Background(), key, &job); !apierrors.IsNotFound(err) {
 		t.Errorf("init job should have been deleted, got %v", err)
 	}
 
-	// And no replacement is ever created.
 	reconcileN(t, r, 3)
 	if err := c.Get(context.Background(), key, &job); !apierrors.IsNotFound(err) {
 		t.Error("a second init job was created after initialization completed")
 	}
 }
 
-// Retain is the default precisely so that removing a Kubernetes object can
-// never destroy backups.
 func TestDeletionPolicyRetainKeepsRepositoryAndSecret(t *testing.T) {
 	api := newFakeAPI()
 	r, c := newHarness(t, api, repositoryFixture(nil))
@@ -338,8 +309,7 @@ func TestDeletionPolicyRetainKeepsRepositoryAndSecret(t *testing.T) {
 	if _, ok := api.repos[id]; !ok {
 		t.Error("the BorgBase repository was removed under the Retain policy")
 	}
-	// The Secret holds the only copy of the encryption key, so it must not be
-	// garbage collected with the resource.
+
 	if err := getSecretErr(c, "restic-borgbase"); err != nil {
 		t.Errorf("credentials secret was removed under the Retain policy: %v", err)
 	}
@@ -375,8 +345,6 @@ func TestDeletionPolicyDeleteRemovesRepository(t *testing.T) {
 	}
 }
 
-// Suspending must stop the controller touching BorgBase at all, so it can be
-// used to freeze a repository while investigating a problem.
 func TestSuspendSkipsReconcile(t *testing.T) {
 	api := newFakeAPI()
 	repo := repositoryFixture(func(r *borgbasev1.Repository) { r.Spec.Suspend = true })
@@ -388,16 +356,11 @@ func TestSuspendSkipsReconcile(t *testing.T) {
 	}
 }
 
-// getSecretErr returns the error from fetching a Secret, for tests that care
-// only whether it is there.
 func getSecretErr(c client.Client, name string) error {
 	return c.Get(context.Background(),
 		types.NamespacedName{Namespace: testNS, Name: name}, &corev1.Secret{})
 }
 
-// Retain never calls BorgBase, so a missing or rotated API token must not be
-// able to strand the object in Terminating. Resolving the token before the
-// policy check used to do exactly that.
 func TestRetainDeletionDoesNotNeedAPIToken(t *testing.T) {
 	api := newFakeAPI()
 	r, c := newHarness(t, api, repositoryFixture(nil))
@@ -412,7 +375,6 @@ func TestRetainDeletionDoesNotNeedAPIToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The token Secret disappears, as it would after a rotation.
 	if err := c.Delete(context.Background(), &corev1.Secret{
 		Name: tokenName, Namespace: tokenNS,
 	}); err != nil {
@@ -425,8 +387,6 @@ func TestRetainDeletionDoesNotNeedAPIToken(t *testing.T) {
 	}
 }
 
-// The Delete path genuinely needs the token, so it must fail loudly and keep
-// the finalizer rather than dropping it and orphaning the repository.
 func TestDeletePolicyWithoutTokenKeepsFinalizer(t *testing.T) {
 	api := newFakeAPI()
 	repo := repositoryFixture(func(r *borgbasev1.Repository) {
@@ -462,7 +422,6 @@ func TestDeletePolicyWithoutTokenKeepsFinalizer(t *testing.T) {
 	}
 }
 
-// Suspending should say so, rather than leaving a stale Ready=True behind.
 func TestSuspendReportsCondition(t *testing.T) {
 	api := newFakeAPI()
 	repo := repositoryFixture(func(r *borgbasev1.Repository) { r.Spec.Suspend = true })
@@ -480,10 +439,6 @@ func TestSuspendReportsCondition(t *testing.T) {
 	}
 }
 
-// The credentials Secret going missing after initialization must never produce
-// a fresh password: the snapshots already in the repository were written under
-// the old one, and a new one cannot decrypt them. Usage alone is not a
-// sufficient guard, because a just-initialized repository still reports zero.
 func TestNeverInventsPasswordOnceProvisioned(t *testing.T) {
 	api := newFakeAPI()
 	r, c := newHarness(t, api, repositoryFixture(nil))
@@ -509,8 +464,6 @@ func TestNeverInventsPasswordOnceProvisioned(t *testing.T) {
 	}
 }
 
-// A recorded repository and a spec that names a different one cannot both be
-// right, and guessing would orphan whichever set of snapshots lost.
 func TestRejectsIDMismatchBetweenSpecAndStatus(t *testing.T) {
 	api := newFakeAPI(&borgbase.Repo{
 		ID: adoptedRepoID, Name: testNS, Format: borgbase.FormatRestic, Htpasswd: "t",
@@ -532,8 +485,6 @@ func TestRejectsIDMismatchBetweenSpecAndStatus(t *testing.T) {
 	}
 }
 
-// Settings the spec cares about are reconciled, so changing a quota in Git
-// actually reaches BorgBase.
 func TestSettingsDriftIsCorrected(t *testing.T) {
 	api := newFakeAPI(&borgbase.Repo{
 		ID: testRepoID, Name: testNS, Format: borgbase.FormatRestic, Htpasswd: "t",
@@ -567,16 +518,12 @@ func TestSettingsDriftIsCorrected(t *testing.T) {
 	if edit.AppendOnly == nil || !*edit.AppendOnly {
 		t.Errorf("appendOnly = %v, want true", edit.AppendOnly)
 	}
-	// quotaEnabled rides along even though it already matched: BorgBase rejects
-	// an edit naming one of the pair without the other, and repeating a value
-	// that is already correct changes nothing.
+
 	if edit.QuotaEnabled == nil || !*edit.QuotaEnabled {
 		t.Errorf("quotaEnabled = %v, want it sent alongside the quota", edit.QuotaEnabled)
 	}
 }
 
-// repoEdit applies whatever it is sent, so a matching repository must not be
-// edited at all: doing so would overwrite settings made in the BorgBase UI.
 func TestNoEditWhenSettingsMatch(t *testing.T) {
 	api := newFakeAPI(&borgbase.Repo{
 		ID: testRepoID, Name: testNS, Format: borgbase.FormatRestic, Htpasswd: "t",
@@ -602,8 +549,6 @@ func TestNoEditWhenSettingsMatch(t *testing.T) {
 	}
 }
 
-// spec.secretName is free-form, so it must not be usable to write into, or
-// under the Delete policy garbage collect, a Secret something else owns.
 func TestRefusesToWriteUnmanagedSecret(t *testing.T) {
 	api := newFakeAPI()
 	repo := repositoryFixture(func(r *borgbasev1.Repository) {
@@ -632,8 +577,6 @@ func TestRefusesToWriteUnmanagedSecret(t *testing.T) {
 	}
 }
 
-// Flipping the policy has to add and remove the ownerReference, or a Secret
-// that was once disposable stays garbage-collectable forever.
 func TestOwnerReferenceFollowsDeletionPolicy(t *testing.T) {
 	api := newFakeAPI()
 	repo := repositoryFixture(func(r *borgbasev1.Repository) {
@@ -662,9 +605,6 @@ func TestOwnerReferenceFollowsDeletionPolicy(t *testing.T) {
 	}
 }
 
-// A BorgBase outage must not be mistaken for a repository that has gone away:
-// a lookup failure has to surface as an error, leaving the recorded ID and the
-// credentials Secret untouched for the next pass.
 func TestLookupFailureLeavesStateIntact(t *testing.T) {
 	api := newFakeAPI()
 	r, c := newHarness(t, api, repositoryFixture(nil))
@@ -695,9 +635,6 @@ func TestLookupFailureLeavesStateIntact(t *testing.T) {
 	}
 }
 
-// BorgBase rejects an edit that names one of quota and quotaEnabled without the
-// other. Adopting a repository that has a quota, with a spec that asks for
-// none, used to send quotaEnabled alone and fail the whole reconcile.
 func TestQuotaAndQuotaEnabledAreAlwaysSentTogether(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -754,7 +691,7 @@ func TestQuotaAndQuotaEnabledAreAlwaysSentTogether(t *testing.T) {
 			if !equalInt64Ptr(opts.Quota, tt.wantQuota) {
 				t.Errorf("quota = %v, want %v", derefInt64(opts.Quota), derefInt64(tt.wantQuota))
 			}
-			// Neither may ever travel without the other.
+
 			if (opts.QuotaEnabled == nil) != (opts.Quota == nil) {
 				t.Errorf("quota and quotaEnabled must be sent together, got quota=%v enabled=%v",
 					derefInt64(opts.Quota), derefBool(opts.QuotaEnabled))
@@ -785,9 +722,6 @@ func derefInt64(p *int64) any {
 	return *p
 }
 
-// Two Repository resources pointing at one BorgBase repository each push their
-// own spec to it, so they overwrite each other on every reconcile and the
-// repository flaps. The newcomer is held back instead.
 func TestConflictingRepositoriesDoNotFight(t *testing.T) {
 	incumbent := &borgbasev1.Repository{
 		Name: resticName, Namespace: testNS,
@@ -814,7 +748,6 @@ func TestConflictingRepositoriesDoNotFight(t *testing.T) {
 		t.Errorf("newcomer should defer to the incumbent, got %q", other)
 	}
 
-	// The incumbent carries on: it was there first.
 	other, err = r.repositoryConflict(context.Background(), incumbent, testRepoID)
 	if err != nil {
 		t.Fatalf("repositoryConflict: %v", err)
@@ -824,8 +757,6 @@ func TestConflictingRepositoriesDoNotFight(t *testing.T) {
 	}
 }
 
-// A repository nothing else claims is not a conflict, and neither is one whose
-// only other claimant is being deleted.
 func TestRepositoryConflictIgnoresUnrelatedAndDeleted(t *testing.T) {
 	deleting := &borgbasev1.Repository{
 		Name: "old", Namespace: testNS,
@@ -856,8 +787,6 @@ func TestRepositoryConflictIgnoresUnrelatedAndDeleted(t *testing.T) {
 	}
 }
 
-// The check spans namespaces, because a BorgBase repository belongs to the
-// account rather than to any one namespace.
 func TestRepositoryConflictIsClusterWide(t *testing.T) {
 	incumbent := &borgbasev1.Repository{
 		Name: resticName, Namespace: "team-a",

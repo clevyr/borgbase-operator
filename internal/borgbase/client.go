@@ -1,3 +1,4 @@
+// Package borgbase is a client for the BorgBase GraphQL API.
 package borgbase
 
 import (
@@ -12,25 +13,23 @@ import (
 	"time"
 )
 
-// DefaultEndpoint is BorgBase's GraphQL endpoint.
+// DefaultEndpoint is the BorgBase GraphQL endpoint.
 const DefaultEndpoint = "https://api.borgbase.com/graphql"
 
-// API is the subset of BorgBase used by this operator. The controllers depend
-// on this interface rather than on Client so they can be tested with a fake.
+// API is the subset of the BorgBase API the operator uses.
 type API interface {
-	// Get looks up a repository by its ID, returning ErrNotFound if absent.
 	Get(ctx context.Context, id string) (*Repo, error)
-	// FindByName returns the repository with the given name, or ErrNotFound.
+
 	FindByName(ctx context.Context, name string) (*Repo, error)
-	// Add creates a new restic-format repository.
+
 	Add(ctx context.Context, opts AddOptions) (*Repo, error)
-	// Edit updates a repository's mutable settings.
+
 	Edit(ctx context.Context, id string, opts EditOptions) (*Repo, error)
-	// Delete permanently removes a repository and all its snapshots.
+
 	Delete(ctx context.Context, id string) error
 }
 
-// Client talks to the BorgBase GraphQL API.
+// Client is a BorgBase GraphQL API client.
 type Client struct {
 	Endpoint string
 	Token    string
@@ -48,8 +47,6 @@ func NewClient(token string) *Client {
 
 var _ API = (*Client)(nil)
 
-// repoFields is the RepoType selection set used by every query and mutation,
-// so that a Repo is always fully populated no matter how it was obtained.
 const repoFields = `
 	id
 	name
@@ -65,8 +62,6 @@ const repoFields = `
 	server { hostname region }
 `
 
-// repoNotFound matches the GraphQL error messages that mean "this repository
-// is absent", as opposed to any other thing the API says does not exist.
 var repoNotFound = regexp.MustCompile(`(?i)repo(sitory)?\b[^.;]*(not found|does not exist)` +
 	`|\bno\s+repo(sitory)?\b[^.;]*\bfound\b` +
 	`|(not found|does not exist)[^.;]*\brepo(sitory)?\b`)
@@ -80,7 +75,6 @@ type graphQLResponse struct {
 	Errors []graphQLError  `json:"errors"`
 }
 
-// execute posts a GraphQL document and unmarshals data into out.
 func (c *Client) execute(ctx context.Context, query string, vars map[string]any, out any) error {
 	body, err := json.Marshal(map[string]any{"query": query, "variables": vars})
 	if err != nil {
@@ -102,8 +96,6 @@ func (c *Client) execute(ctx context.Context, query string, vars map[string]any,
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		// Include a little of the body: a bare "401 Unauthorized" gives no hint
-		// whether the token is wrong, expired, or lacks the needed scope.
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
 		if len(snippet) > 0 {
 			return fmt.Errorf("borgbase: unexpected status %s: %s", resp.Status, strings.TrimSpace(string(snippet)))
@@ -121,11 +113,7 @@ func (c *Client) execute(ctx context.Context, query string, vars map[string]any,
 			msgs = append(msgs, e.Message)
 		}
 		joined := strings.Join(msgs, "; ")
-		// BorgBase reports a missing repository as a GraphQL error rather than
-		// a null result, so map it onto ErrNotFound for callers. The match
-		// requires the message to be about a repository: a bare "does not
-		// exist" also covers things like an unknown region, and treating that
-		// as "absent" would send the caller on to create a duplicate.
+
 		if repoNotFound.MatchString(joined) {
 			return fmt.Errorf("%w: %s", ErrNotFound, joined)
 		}
@@ -154,7 +142,7 @@ func (c *Client) httpClient() *http.Client {
 	return http.DefaultClient
 }
 
-// Get looks up a repository by ID.
+// Get returns the repository with the given ID.
 func (c *Client) Get(ctx context.Context, id string) (*Repo, error) {
 	query := `query repo($id: String!) { repo(repoId: $id) {` + repoFields + `} }`
 
@@ -170,11 +158,7 @@ func (c *Client) Get(ctx context.Context, id string) (*Repo, error) {
 	return data.Repo, nil
 }
 
-// FindByName returns the single repository with the given name.
-//
-// An exact match is required: repoList's name argument is a server-side filter
-// whose matching semantics are not documented, so results are re-checked here
-// rather than trusted to be exact.
+// FindByName returns the repository with the given name, or ErrNotFound.
 func (c *Client) FindByName(ctx context.Context, name string) (*Repo, error) {
 	query := `query repoList($name: String) { repoList(name: $name) {` + repoFields + `} }`
 
@@ -191,9 +175,6 @@ func (c *Client) FindByName(ctx context.Context, name string) (*Repo, error) {
 			continue
 		}
 		if found != nil {
-			// Two repositories share this name. Creating a third would make it
-			// worse, and picking one arbitrarily risks backing up into the
-			// wrong place, so refuse and let a human disambiguate by ID.
 			return nil, fmt.Errorf("borgbase: multiple repositories named %q; adopt one explicitly by ID", name)
 		}
 		found = &data.RepoList[i]
@@ -204,7 +185,7 @@ func (c *Client) FindByName(ctx context.Context, name string) (*Repo, error) {
 	return found, nil
 }
 
-// Add creates a new restic-format repository.
+// Add creates a repository.
 func (c *Client) Add(ctx context.Context, opts AddOptions) (*Repo, error) {
 	query := `mutation repoAdd(
 		$name: String!
@@ -254,8 +235,7 @@ func (c *Client) Add(ctx context.Context, opts AddOptions) (*Repo, error) {
 	return data.RepoAdd.RepoAdded, nil
 }
 
-// Edit updates a repository's mutable settings. Format and region are not
-// editable and are therefore not sent.
+// Edit changes settings on an existing repository.
 func (c *Client) Edit(ctx context.Context, id string, opts EditOptions) (*Repo, error) {
 	query := `mutation repoEdit(
 		$id: String!
@@ -301,7 +281,7 @@ func (c *Client) Edit(ctx context.Context, id string, opts EditOptions) (*Repo, 
 	return data.RepoEdit.RepoEdited, nil
 }
 
-// Delete permanently removes a repository and every snapshot in it.
+// Delete removes a repository and its snapshots.
 func (c *Client) Delete(ctx context.Context, id string) error {
 	query := `mutation repoDelete($id: String!) { repoDelete(id: $id) { ok } }`
 
@@ -313,9 +293,7 @@ func (c *Client) Delete(ctx context.Context, id string) error {
 	if err := c.execute(ctx, query, map[string]any{"id": id}, &data); err != nil {
 		return err
 	}
-	// ok=false with no errors array means the deletion did not happen. Treating
-	// that as success would drop the finalizer and leave the repository behind
-	// with nothing left pointing at it.
+
 	if ok := data.RepoDelete.OK; ok != nil && !*ok {
 		return fmt.Errorf("borgbase: repoDelete reported ok=false for repository %s", id)
 	}

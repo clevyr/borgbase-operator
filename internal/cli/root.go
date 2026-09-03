@@ -1,7 +1,4 @@
-// Package cli implements corg, the companion CLI for the borgbase operator.
-//
-// The same binary serves as a standalone `corg` and as a kubectl plugin
-// (`kubectl corg`), chosen by the name it was invoked under.
+// Package cli implements corg, which doubles as the kubectl-corg plugin.
 package cli
 
 import (
@@ -12,8 +9,7 @@ import (
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 )
 
-// Command group ids, declared here so every subcommand file can slot itself
-// into the right section of `corg --help`.
+// Command groups, in the order they appear in help output.
 const (
 	GroupInspect     = "inspect"
 	GroupRun         = "run"
@@ -24,12 +20,10 @@ const (
 	GroupDevelopment = "development"
 )
 
-// pluginPrefix is the kubectl plugin naming convention. kubectl also accepts an
-// underscore in place of a dash for names that need one.
 const pluginPrefix = "kubectl-"
 
-// DisplayName derives how the binary should describe itself from argv[0], so
-// help output and error messages match how the user actually invoked it.
+// DisplayName returns how the command should refer to itself, which differs when it is
+// invoked as a kubectl plugin.
 func DisplayName(argv0 string) string {
 	base := filepath.Base(argv0)
 	base = strings.TrimSuffix(base, ".exe")
@@ -39,7 +33,7 @@ func DisplayName(argv0 string) string {
 	return "corg"
 }
 
-// New builds the root command. argv0 selects the standalone or plugin identity.
+// New returns the root command.
 func New(streams genericiooptions.IOStreams, argv0 string) *cobra.Command {
 	f := NewFactory(streams)
 
@@ -67,8 +61,6 @@ restores snapshots, and drops you into a shell with restic already configured.`,
 	cmd.SetOut(streams.Out)
 	cmd.SetErr(streams.ErrOut)
 
-	// The standard kubectl connection flags, so -n/--context/--kubeconfig
-	// behave exactly as they do everywhere else.
 	f.ConfigFlags.AddFlags(cmd.PersistentFlags())
 
 	subcommands := []*cobra.Command{
@@ -99,8 +91,6 @@ restores snapshots, and drops you into a shell with restic already configured.`,
 		newVersionCommand(f),
 	}
 
-	// Only register groups that something actually lands in, otherwise cobra
-	// prints a bare heading with nothing under it.
 	used := make(map[string]bool, len(subcommands))
 	for _, sub := range subcommands {
 		if sub.GroupID != "" {
@@ -118,7 +108,6 @@ restores snapshots, and drops you into a shell with restic already configured.`,
 	return cmd
 }
 
-// groupOrder is the order the sections appear in help output.
 func groupOrder() []*cobra.Group {
 	return []*cobra.Group{
 		{ID: GroupInspect, Title: "Inspect:"},

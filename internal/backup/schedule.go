@@ -7,16 +7,8 @@ import (
 	"time"
 )
 
-// ResolveSchedule turns a ScheduledBackup's schedule into a concrete cron
-// expression for the generated CronJob.
-//
-// A five-field cron expression passes through untouched, so an existing
-// hand-tuned schedule can be migrated verbatim. A shorthand such as "@hourly"
-// is expanded with a jitter derived from key, spreading copy-pasted backups
-// across the period instead of firing them all on the hour.
-//
-// The jitter is a pure function of key, so a given backup keeps its slot across
-// restarts and re-reconciles; it only moves if the resource is renamed.
+// ResolveSchedule expands a cron shorthand such as @daily or @every 6h into a 5-field cron
+// expression, jittered by key so backups do not all fire at once. Plain cron passes through.
 func ResolveSchedule(schedule, key string) (string, error) {
 	schedule = strings.TrimSpace(schedule)
 	if schedule == "" {
@@ -42,8 +34,7 @@ func ResolveSchedule(schedule, key string) (string, error) {
 	case schedule == "@weekly":
 		return fmt.Sprintf("%d %d * * %d", minute, hour, (h/1440)%7), nil
 	case schedule == "@monthly":
-		// Days 1-28 only: a backup scheduled on the 29th through 31st would
-		// silently skip most months.
+
 		return fmt.Sprintf("%d %d %d * *", minute, hour, (h/1440)%28+1), nil
 	case schedule == "@yearly" || schedule == "@annually":
 		return fmt.Sprintf("%d %d %d %d *", minute, hour, (h/1440)%28+1, (h/40320)%12+1), nil
@@ -56,15 +47,13 @@ func ResolveSchedule(schedule, key string) (string, error) {
 
 // resolveEvery expands "@every <duration>" into a stepped cron expression.
 //
-// Only durations that divide evenly into an hour or a day are accepted. Cron
-// steps restart at the top of each period, so "@every 7h" would fire at 00:00,
-// 07:00, 14:00, 21:00 and then again at 00:00 three hours later - an uneven gap
-// that is almost never what someone means.
+// Only durations dividing evenly into an hour or a day are accepted, because
+// cron steps restart each period: "@every 7h" would fire at 00:00, 07:00, 14:00,
+// 21:00, then again three hours later.
 //
-// The steps are phase-shifted with the range form, "M-59/15" rather than
-// "*/15", so that a stepped schedule is jittered like every other shorthand.
-// A plain step always starts at zero, which is exactly the stampede on the
-// top of the hour that jitter exists to avoid.
+// The steps are phase-shifted ("M-59/15", not "*/15") so a stepped schedule is
+// jittered like every other shorthand. A plain step always starts at zero, which
+// is the top-of-the-hour stampede jitter exists to avoid.
 func resolveEvery(d string, minute, hour int) (string, error) {
 	dur, err := time.ParseDuration(d)
 	if err != nil {
@@ -98,10 +87,7 @@ func resolveEvery(d string, minute, hour int) (string, error) {
 		return fmt.Sprintf("%d %d-23/%d * * *", minute, hour%hours, hours), nil
 
 	case dur == 24*time.Hour:
-		// Identical to "@daily": hashing anything else here (the minute, say)
-		// would spread daily backups over far fewer slots than the key can
-		// address, and give the same resource two different times depending on
-		// how its schedule was spelled.
+
 		return fmt.Sprintf("%d %d * * *", minute, hour), nil
 
 	default:
@@ -109,7 +95,6 @@ func resolveEvery(d string, minute, hour int) (string, error) {
 	}
 }
 
-// jitter returns a stable non-negative hash of key.
 func jitter(key string) int {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(key))

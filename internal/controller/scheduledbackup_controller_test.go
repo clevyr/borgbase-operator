@@ -28,7 +28,6 @@ const (
 	cronJobName = resticName + "-backup"
 	testRepoID  = "abc12345"
 
-	// newBackupName is the newcomer in the slug-conflict tests.
 	newBackupName = "restic-new"
 )
 
@@ -69,7 +68,6 @@ func scheduledBackup() *borgbasev1.ScheduledBackup {
 	}
 }
 
-// A CronJob the operator owns is updated in place, so drift is corrected.
 func TestUpdatesItsOwnCronJob(t *testing.T) {
 	r, c := backupHarness(t, initializedRepo(), scheduledBackup())
 	key := types.NamespacedName{Namespace: testNS, Name: resticName}
@@ -83,7 +81,6 @@ func TestUpdatesItsOwnCronJob(t *testing.T) {
 		t.Fatalf("expected a CronJob: %v", err)
 	}
 
-	// Simulate a manual edit, which the next reconcile should correct.
 	want := cj.Spec.Schedule
 	cj.Spec.Schedule = "0 0 * * *"
 	if err := c.Update(context.Background(), &cj); err != nil {
@@ -100,9 +97,6 @@ func TestUpdatesItsOwnCronJob(t *testing.T) {
 	}
 }
 
-// A backup whose repository does not exist must say so and schedule nothing:
-// the run would fail, and on a fresh repository it could initialize it with
-// the wrong password.
 func TestRepositoryNotFoundSetsCondition(t *testing.T) {
 	r, c := backupHarness(t, scheduledBackup())
 	reconcileBackup(t, r)
@@ -125,7 +119,6 @@ func TestRepositoryNotInitializedSetsCondition(t *testing.T) {
 	assertNoCronJob(t, c)
 }
 
-// The cache is what keeps `restic forget --prune` affordable.
 func TestCreatesCacheVolume(t *testing.T) {
 	r, c := backupHarness(t, initializedRepo(), scheduledBackup())
 	reconcileBackup(t, r)
@@ -140,8 +133,6 @@ func TestCreatesCacheVolume(t *testing.T) {
 	}
 }
 
-// Turning the cache off should reclaim the volume rather than leaving a claim
-// nothing will ever mount again.
 func TestDisablingCacheDeletesTheVolume(t *testing.T) {
 	r, c := backupHarness(t, initializedRepo(), scheduledBackup())
 	reconcileBackup(t, r)
@@ -168,8 +159,6 @@ func TestDisablingCacheDeletesTheVolume(t *testing.T) {
 	}
 }
 
-// A cache claim the operator did not create is somebody else's, even if the
-// name happens to match.
 func TestDisablingCacheLeavesForeignClaimAlone(t *testing.T) {
 	foreign := &corev1.PersistentVolumeClaim{
 		Name: resticName + "-cache", Namespace: testNS,
@@ -192,8 +181,6 @@ func TestDisablingCacheLeavesForeignClaimAlone(t *testing.T) {
 	}
 }
 
-// The CronJob holds the run history, so the ScheduledBackup mirrors it rather
-// than making the reader look in two places.
 func TestCopiesCronJobStatusTimes(t *testing.T) {
 	r, c := backupHarness(t, initializedRepo(), scheduledBackup())
 	reconcileBackup(t, r)
@@ -226,8 +213,6 @@ func TestCopiesCronJobStatusTimes(t *testing.T) {
 	}
 }
 
-// Sharing a healthchecks check would let one backup's success mask the other's
-// failure. The older backup keeps reporting; the newcomer is held back.
 func TestSlugConflictBlocksTheNewerBackup(t *testing.T) {
 	pingKey := &corev1.SecretKeySelector{
 		Name: "healthchecks-ping-key", Key: "PING_KEY",
@@ -267,7 +252,6 @@ func TestSlugConflictBlocksTheNewerBackup(t *testing.T) {
 		t.Error("the conflicting backup was scheduled anyway")
 	}
 
-	// The incumbent is unaffected.
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{
 		Namespace: testNS, Name: "restic-old",
 	}); err != nil {
@@ -280,7 +264,6 @@ func TestSlugConflictBlocksTheNewerBackup(t *testing.T) {
 	}
 }
 
-// Distinct slugs are the fix, so they must actually clear the conflict.
 func TestDistinctSlugsCoexist(t *testing.T) {
 	pingKey := &corev1.SecretKeySelector{Name: "healthchecks-ping-key", Key: "PING_KEY"}
 	first := scheduledBackup()
@@ -313,8 +296,6 @@ func TestDistinctSlugsCoexist(t *testing.T) {
 	}
 }
 
-// A repository becoming ready has to unblock the backups waiting on it, which
-// is what the field index is for.
 func TestBackupsForRepositoryUsesTheIndex(t *testing.T) {
 	mine := scheduledBackup()
 	other := scheduledBackup()
@@ -342,8 +323,6 @@ func TestBackupsForRepositoryUsesTheIndex(t *testing.T) {
 	}
 }
 
-// The cache only holds CronJobs this operator labelled, so a name taken by
-// something else looks absent until the create fails.
 func TestUnmanagedCronJobIsReported(t *testing.T) {
 	foreign := &batchv1.CronJob{
 		Name: cronJobName, Namespace: testNS,
@@ -362,8 +341,7 @@ func TestUnmanagedCronJobIsReported(t *testing.T) {
 		},
 	}
 	r, _ := backupHarness(t, initializedRepo(), scheduledBackup())
-	// Create it behind the reconciler's back, as an unlabelled object outside
-	// the cache would be.
+
 	if err := r.Create(context.Background(), foreign); err != nil {
 		t.Fatal(err)
 	}
@@ -377,8 +355,6 @@ func TestUnmanagedCronJobIsReported(t *testing.T) {
 	}
 }
 
-// createConflictClient hides existing CronJobs from Get, the way a filtered
-// informer cache does, so Create is the first thing to notice the collision.
 type createConflictClient struct {
 	client.Client
 }

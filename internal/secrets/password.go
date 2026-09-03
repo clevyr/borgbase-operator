@@ -1,4 +1,4 @@
-// Package secrets generates the credentials the operator owns.
+// Package secrets generates the credentials the operator stores for a repository.
 package secrets
 
 import (
@@ -6,26 +6,17 @@ import (
 	"fmt"
 )
 
-// passwordLength of 128 characters
 const passwordLength = 128
 
-// alphabet deliberately excludes punctuation. The password is interpolated
-// into shell environments and, for the REST credential, into a URL; keeping it
-// alphanumeric means it can never need escaping in either place.
 const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
-// GeneratePassword returns a new restic repository password.
-//
-// This is the encryption key for every snapshot in the repository. If it is
-// lost the backups are unrecoverable, so callers must persist it before it is
-// used and must never regenerate it for a repository that already has one.
+// GeneratePassword returns a new random restic password.
 func GeneratePassword() (string, error) {
 	buf := make([]byte, passwordLength)
 	if _, err := rand.Read(buf); err != nil {
 		return "", fmt.Errorf("generating password: %w", err)
 	}
-	// len(alphabet) is 62, which does not divide 256, so taking the raw
-	// modulus would bias the first few letters. Rejection-sample instead.
+
 	const maxUnbiased = 256 - (256 % len(alphabet))
 	out := make([]byte, 0, passwordLength)
 	for len(out) < passwordLength {

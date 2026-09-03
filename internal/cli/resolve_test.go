@@ -91,8 +91,6 @@ func TestResolve(t *testing.T) {
 	}
 }
 
-// A bare name that matches both kinds must not be guessed at, since the two
-// commands it could dispatch to do very different things.
 func TestResolveRejectsAmbiguousName(t *testing.T) {
 	c := newClient(t, newRepo(testNS), newBackup(testRepoName, testRepoName))
 
@@ -150,8 +148,6 @@ func TestRepositoryFor(t *testing.T) {
 		t.Errorf("repository = %q, want %q", got.Name, testRepoName)
 	}
 
-	// A dangling reference is the RepositoryNotFound path the operator reports,
-	// so the message has to name both objects.
 	dangling := newBackup("orphan", "gone")
 	_, err = RepositoryFor(context.Background(), newClient(t, dangling), dangling)
 	if !errors.Is(err, ErrTargetNotFound) {

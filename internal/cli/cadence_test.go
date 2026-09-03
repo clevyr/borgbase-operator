@@ -2,7 +2,6 @@ package cli
 
 import "testing"
 
-// The schedule shapes actually found in the fleet.
 const (
 	cronHourly     = "36 * * * *"
 	cronDaily      = "20 0 * * *"
@@ -10,9 +9,6 @@ const (
 	cronEvery15Min = "*/15 * * * *"
 )
 
-// Converting a hand-jittered schedule to a shorthand must preserve how often
-// the backup runs. These are the exact conversions migrate.sh performs against
-// the fleet, plus the jittered forms the operator renders back.
 func TestCadenceSurvivesJittering(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -46,8 +42,6 @@ func TestCadenceSurvivesJittering(t *testing.T) {
 	}
 }
 
-// The whole point of the gate: a conversion that quietly backs up less often
-// has to fail, not pass because the minute happens to match.
 func TestCadenceCatchesRealChanges(t *testing.T) {
 	tests := []struct {
 		name string
@@ -77,8 +71,6 @@ func TestCadenceCatchesRealChanges(t *testing.T) {
 	}
 }
 
-// An uneven step leaves a gap the operator rejects outright, but parity has to
-// be able to describe one if it meets it in a hand-written schedule.
 func TestCadenceReportsUnevenSteps(t *testing.T) {
 	c, err := cadenceOf("0 */7 * * *")
 	if err != nil {

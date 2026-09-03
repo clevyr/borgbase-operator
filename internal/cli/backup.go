@@ -21,14 +21,12 @@ import (
 )
 
 const (
-	// pollInterval is how often the CLI re-reads state while waiting. The
-	// operator reconciles on a watch, so a trigger is normally picked up well
-	// inside the first tick.
 	pollInterval = time.Second
 
 	defaultWaitTimeout = 2 * time.Hour
 )
 
+// Errors returned by the backup command.
 var (
 	ErrTriggerSkipped = errors.New("backup was not started")
 	ErrBackupFailed   = errors.New("backup failed")
@@ -103,8 +101,6 @@ func runBackupNow(
 ) error {
 	p := newPrinter(out)
 
-	// The operator only reaches the trigger once the backup is reconcilable,
-	// so say plainly that the run is deferred rather than appearing to hang.
 	if cond := FindCondition(sb.Status.Conditions, borgbasev1.ScheduledBackupConditionReady); cond == nil {
 		p.println("! this backup has not been reconciled yet; the run will start once it is")
 	} else if cond.Status != metav1.ConditionTrue {
@@ -137,7 +133,6 @@ func runBackupNow(
 	return awaitJob(ctx, c, cs, out, sb, jobName, follow, timeout)
 }
 
-// triggerBackup stamps the annotation the operator watches.
 func triggerBackup(ctx context.Context, c client.Client, sb *borgbasev1.ScheduledBackup, at time.Time) error {
 	patch := client.MergeFrom(sb.DeepCopy())
 	if sb.Annotations == nil {
@@ -147,12 +142,6 @@ func triggerBackup(ctx context.Context, c client.Client, sb *borgbasev1.Schedule
 	return c.Patch(ctx, sb, patch)
 }
 
-// awaitTrigger waits for the operator to act on the trigger and returns the Job
-// it started.
-//
-// It reads status rather than looking for the Job by name, so a run refused by
-// concurrencyPolicy is reported as refused instead of waiting for a Job that
-// will never appear.
 func awaitTrigger(
 	ctx context.Context,
 	c client.Client,
@@ -188,7 +177,6 @@ func awaitTrigger(
 	return jobName, nil
 }
 
-// awaitJob follows a run to completion, streaming its logs when asked.
 func awaitJob(
 	ctx context.Context,
 	c client.Client,
@@ -231,7 +219,6 @@ func awaitJob(
 	return p.Err()
 }
 
-// followJobLogs waits for the run's pod to exist, then streams it.
 func followJobLogs(
 	ctx context.Context,
 	c client.Client,
@@ -251,7 +238,6 @@ func followJobLogs(
 				return false, err
 			}
 			for i := range pods {
-				// A pod that is still pulling its image has nothing to stream.
 				if pods[i].Status.Phase != corev1.PodPending {
 					return true, nil
 				}

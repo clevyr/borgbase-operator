@@ -14,8 +14,6 @@ import (
 	borgbasev1 "github.com/clevyr/borgbase-operator/api/v1"
 )
 
-// defaultRunLimit bounds the run table. Jobs are pruned by the CronJob history
-// limits and a one hour TTL, so there is rarely more than a handful anyway.
 const defaultRunLimit = 10
 
 func newStatusCommand(f *Factory) *cobra.Command {
@@ -184,8 +182,6 @@ func runDuration(job *batchv1.Job) string {
 	if job.Status.CompletionTime != nil {
 		end = job.Status.CompletionTime.Time
 	} else if job.Status.Active == 0 && job.Status.Failed > 0 {
-		// A failed Job may carry no completion time; fall back to its last
-		// condition so the column is not misleadingly long.
 		for _, cond := range job.Status.Conditions {
 			if cond.Type == batchv1.JobFailed {
 				end = cond.LastTransitionTime.Time

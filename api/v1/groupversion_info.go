@@ -1,4 +1,4 @@
-// Package v1 contains API Schema definitions for the borgbase v1 API group.
+// Package v1 contains the borgbase.clevyr.com/v1 API types.
 // +kubebuilder:object:generate=true
 // +groupName=borgbase.clevyr.com
 package v1
@@ -10,19 +10,18 @@ import (
 )
 
 var (
-	// SchemeGroupVersion is group version used to register these objects.
-	// This name is used by applyconfiguration generators (e.g. controller-gen).
+	// SchemeGroupVersion is the group version used to register these objects.
 	SchemeGroupVersion = schema.GroupVersion{Group: "borgbase.clevyr.com", Version: "v1"}
 
-	// GroupVersion is an alias for SchemeGroupVersion, for backward compatibility.
+	// GroupVersion is an alias for SchemeGroupVersion.
 	GroupVersion = SchemeGroupVersion
 
-	// SchemeBuilder is used to add go types to the GroupVersionKind scheme.
+	// SchemeBuilder collects the functions that add these types to a Scheme.
 	SchemeBuilder = runtime.NewSchemeBuilder(func(scheme *runtime.Scheme) error {
 		metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 		return nil
 	})
 
-	// AddToScheme adds the types in this group-version to the given scheme.
+	// AddToScheme adds these types to a Scheme.
 	AddToScheme = SchemeBuilder.AddToScheme
 )

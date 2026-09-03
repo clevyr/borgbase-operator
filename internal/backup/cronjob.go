@@ -1,3 +1,4 @@
+// Package backup builds the CronJobs and Jobs that run restic.
 package backup
 
 import (
@@ -16,24 +17,15 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-// Invariants shared by every generated backup, carried over from the
-// hand-written manifests this operator replaces.
 const (
-	// cacheMountPath is where the restic cache volume is mounted. The backup
-	// image sets RESTIC_CACHE_DIR to this path.
 	cacheMountPath = "/cache"
 
-	// ttlSecondsAfterFinished cleans up finished backup Jobs after an hour,
-	// which is long enough to read the logs of a failure.
 	ttlSecondsAfterFinished int32 = 3600
 
-	// cnpgDefaultCluster is the CloudNativePG Cluster name used throughout the
-	// fleet, and therefore the default target for pod affinity.
 	cnpgDefaultCluster = "postgresql"
 
 	hostnameTopologyKey = "kubernetes.io/hostname"
 
-	// Label keys and values used for pod affinity and identification.
 	labelName       = "app.kubernetes.io/name"
 	labelController = "app.kubernetes.io/controller"
 	labelManagedBy  = "app.kubernetes.io/managed-by"
@@ -44,42 +36,31 @@ const (
 	mariadbName   = "mariadb"
 )
 
-// Config carries operator-level settings into rendering.
+// Config is the operator-wide backup configuration.
 type Config struct {
-	// Image is the default backup image. It must provide restic, runitor, ts
-	// and dumpdb.
 	Image string
 
-	// Healthchecks is the operator-level dead-man's-switch configuration.
 	Healthchecks healthchecks.Config
 
-	// CacheStorageClass is the StorageClass for restic cache volumes. It must
-	// support ReadWriteMany when backups can run concurrently.
 	CacheStorageClass string
 }
 
-// CacheName returns the name of the restic cache PVC for a backup.
-// LabelTrigger marks how a backup Job was started. Scheduled runs carry no
-// such label; only one-off runs are tagged.
 const (
-	LabelTrigger  = "borgbase.clevyr.com/trigger"
+	// LabelTrigger marks how a backup Job was started.
+	LabelTrigger = "borgbase.clevyr.com/trigger"
+	// TriggerManual is the LabelTrigger value for a triggered backup.
 	TriggerManual = "manual"
 )
 
+// CacheName returns the name of the restic cache PVC.
 func CacheName(sb *borgbasev1.ScheduledBackup) string { return sb.Name + "-cache" }
 
-// CronJobName returns the name of the CronJob for a backup.
+// CronJobName returns the name of the backup CronJob.
 func CronJobName(sb *borgbasev1.ScheduledBackup) string { return sb.Name + "-backup" }
 
-// maxManualJobName leaves room for the suffix the Job controller appends when
-// it names pods.
 const maxManualJobName = 52
 
-// ManualJobName is the Job for a one-off run requested at the given time.
-//
-// It is derived from the trigger timestamp rather than randomised, so a
-// reconcile that runs twice for one trigger collides on the name instead of
-// starting a second backup.
+// ManualJobName returns the Job name for a backup triggered at the given time.
 func ManualJobName(sb *borgbasev1.ScheduledBackup, at time.Time) string {
 	suffix := "-manual-" + strconv.FormatInt(at.Unix(), 36)
 	name := sb.Name
@@ -89,11 +70,7 @@ func ManualJobName(sb *borgbasev1.ScheduledBackup, at time.Time) string {
 	return name + suffix
 }
 
-// BuildManualJob renders a one-off run of a ScheduledBackup.
-//
-// It reuses the CronJob's job template verbatim, so a manual backup does
-// exactly what a scheduled one does, and it is owned by the ScheduledBackup
-// rather than the CronJob so the CronJob's history limits cannot delete it.
+// BuildManualJob builds a one-off backup Job.
 func BuildManualJob(
 	sb *borgbasev1.ScheduledBackup,
 	repo *borgbasev1.Repository,
@@ -119,7 +96,6 @@ func BuildManualJob(
 	}, nil
 }
 
-// cacheEnabled reports whether the cache volume should be created.
 func cacheEnabled(sb *borgbasev1.ScheduledBackup) bool {
 	if sb.Spec.Cache == nil || sb.Spec.Cache.Enabled == nil {
 		return true
@@ -127,10 +103,7 @@ func cacheEnabled(sb *borgbasev1.ScheduledBackup) bool {
 	return *sb.Spec.Cache.Enabled
 }
 
-// BuildCachePVC renders the restic cache volume, or nil when disabled.
-//
-// A persistent cache is what keeps `restic forget --prune` affordable: without
-// it every run re-downloads the repository index.
+// BuildCachePVC builds the restic cache claim, or nil when caching is off.
 func BuildCachePVC(sb *borgbasev1.ScheduledBackup, cfg Config) (*corev1.PersistentVolumeClaim, error) {
 	if !cacheEnabled(sb) {
 		return nil, nil
@@ -178,10 +151,7 @@ func commonLabels(sb *borgbasev1.ScheduledBackup) map[string]string {
 	}
 }
 
-// BuildJobTemplate renders the Job that runs a ScheduledBackup.
-//
-// It is shared by the generated CronJob and by one-off runs, so a manual backup
-// is byte-for-byte the same work as a scheduled one.
+// BuildJobTemplate builds the pod template shared by scheduled and manual backups.
 func BuildJobTemplate(
 	sb *borgbasev1.ScheduledBackup,
 	repo *borgbasev1.Repository,
@@ -217,8 +187,6 @@ func BuildJobTemplate(
 		SecurityContext: containerSecurityContext(sb),
 	}
 	if sb.Spec.Volume != nil {
-		// restic backs up paths relative to the working directory, so file
-		// sources can be written as "." or "app" rather than absolute paths.
 		container.WorkingDir = sb.Spec.Volume.EffectiveMountPath()
 	}
 
@@ -226,9 +194,7 @@ func BuildJobTemplate(
 		Labels: commonLabels(sb),
 		Spec: batchv1.JobSpec{
 			TTLSecondsAfterFinished: ptr.To(ttlSecondsAfterFinished),
-			// A backup that fails should wait for its next scheduled run rather
-			// than retrying immediately against a repository that may be locked
-			// by the failed attempt.
+
 			BackoffLimit: ptr.To(int32(0)),
 			Template: corev1.PodTemplateSpec{
 				Labels: podLabels(sb),
@@ -237,9 +203,7 @@ func BuildJobTemplate(
 					Containers:    []corev1.Container{container},
 					Volumes:       volumes,
 					Affinity:      buildAffinity(sb),
-					// The backup talks to restic and the database, never to the
-					// API server, so a mounted token is exposure of the
-					// namespace's default ServiceAccount for nothing.
+
 					AutomountServiceAccountToken: ptr.To(false),
 					SecurityContext:              podSecurityContext(sb),
 				},
@@ -248,7 +212,7 @@ func BuildJobTemplate(
 	}, nil
 }
 
-// BuildCronJob renders the CronJob that runs a ScheduledBackup.
+// BuildCronJob builds the CronJob that runs scheduled backups.
 func BuildCronJob(
 	sb *borgbasev1.ScheduledBackup,
 	repo *borgbasev1.Repository,
@@ -313,20 +277,19 @@ func resources(sb *borgbasev1.ScheduledBackup) corev1.ResourceRequirements {
 func podLabels(sb *borgbasev1.ScheduledBackup) map[string]string {
 	labels := commonLabels(sb)
 	if sb.Spec.Database != nil && sb.Spec.Database.Engine == borgbasev1.DatabaseEngineMariaDB {
-		// MariaDB network policies select clients by this label.
 		labels["mariadb-client"] = "true"
 	}
 	maps.Copy(labels, sb.Spec.PodLabels)
 	return labels
 }
 
-// podSecurityContext returns the pod's security context.
+// podSecurityContext returns the pod's security context, which by default sets
+// only the seccomp profile.
 //
-// The default sets only the seccomp profile. Pinning a user or group id is
-// what makes a backup pod hard to run: the pod has to read the app's data,
-// whose ownership varies per app and per cluster, and an fsGroup would chown
-// that data as a side effect of backing it up. A namespace that needs more
-// supplies it through spec.podSecurityContext.
+// Pinning a user or group id is what makes a backup pod hard to run: it has to
+// read the app's data, whose ownership varies per app and per cluster, and an
+// fsGroup would chown that data as a side effect of backing it up. A namespace
+// needing more supplies it through spec.podSecurityContext.
 func podSecurityContext(sb *borgbasev1.ScheduledBackup) *corev1.PodSecurityContext {
 	if sb.Spec.PodSecurityContext != nil {
 		return sb.Spec.PodSecurityContext
@@ -336,12 +299,6 @@ func podSecurityContext(sb *borgbasev1.ScheduledBackup) *corev1.PodSecurityConte
 	}
 }
 
-// containerSecurityContext returns the backup container's security context.
-//
-// Capabilities and privilege escalation are locked down unconditionally, since
-// restic needs neither and neither depends on which user the pod runs as. A
-// read-only root filesystem is opt-in: where the image and the dump tools
-// write is their business.
 func containerSecurityContext(sb *borgbasev1.ScheduledBackup) *corev1.SecurityContext {
 	if sb.Spec.ContainerSecurityContext != nil {
 		return sb.Spec.ContainerSecurityContext
@@ -352,9 +309,7 @@ func containerSecurityContext(sb *borgbasev1.ScheduledBackup) *corev1.SecurityCo
 	}
 }
 
-// Reporter resolves this backup's healthchecks settings, defaulting the check
-// slug to the namespace. It is exported so the controller can detect two
-// backups in one namespace resolving to the same check.
+// Reporter returns the Healthchecks reporter for a backup.
 func Reporter(sb *borgbasev1.ScheduledBackup, cfg Config) healthchecks.Reporter {
 	var o healthchecks.Overrides
 	if hc := sb.Spec.Healthchecks; hc != nil {
@@ -370,20 +325,16 @@ func Reporter(sb *borgbasev1.ScheduledBackup, cfg Config) healthchecks.Reporter 
 	return healthchecks.Resolve(cfg.Healthchecks, o, sb.Namespace)
 }
 
-// buildCommand renders the container command, wrapped for healthchecks
-// reporting when it is enabled.
 func buildCommand(sb *borgbasev1.ScheduledBackup, cfg Config, script string) []string {
 	return Reporter(sb, cfg).Wrap([]string{"sh", "-c", script})
 }
 
-// buildEnv assembles the container environment.
 func buildEnv(sb *borgbasev1.ScheduledBackup, cfg Config) ([]corev1.EnvVar, error) {
 	env := []corev1.EnvVar{
 		{Name: "TZ", Value: sb.Spec.TimeZone},
 		{
 			Name: "RESTIC_HOST",
-			// Snapshots are tagged with the namespace as their host, so a
-			// single repository stays legible if it ever holds more than one.
+
 			ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
 			},
@@ -391,8 +342,6 @@ func buildEnv(sb *borgbasev1.ScheduledBackup, cfg Config) ([]corev1.EnvVar, erro
 	}
 
 	if db := sb.Spec.Database; db != nil && db.Engine == borgbasev1.DatabaseEngineMariaDB {
-		// dumpdb reads the password from the mounted Secret but takes the rest
-		// of the connection details from the environment.
 		if db.Host == "" || db.Name == "" || db.User == "" {
 			return nil, fmt.Errorf("database.host, database.name and database.user are required for the mariadb engine")
 		}
@@ -409,15 +358,12 @@ func buildEnv(sb *borgbasev1.ScheduledBackup, cfg Config) ([]corev1.EnvVar, erro
 	}
 	env = append(env, hcEnv...)
 
-	// Sort user-supplied env so the rendered CronJob is stable across
-	// reconciles and does not thrash on map iteration order.
 	for _, k := range slices.Sorted(maps.Keys(sb.Spec.Env)) {
 		env = append(env, corev1.EnvVar{Name: k, Value: sb.Spec.Env[k]})
 	}
 	return env, nil
 }
 
-// buildVolumes assembles the pod volumes and their mounts.
 func buildVolumes(sb *borgbasev1.ScheduledBackup) ([]corev1.Volume, []corev1.VolumeMount) {
 	var volumes []corev1.Volume
 	var mounts []corev1.VolumeMount
@@ -435,9 +381,7 @@ func buildVolumes(sb *borgbasev1.ScheduledBackup) ([]corev1.Volume, []corev1.Vol
 			Name:   "db-credentials",
 			Secret: &corev1.SecretVolumeSource{SecretName: db.EffectiveSecretName()},
 		})
-		// One fixed path, not one derived from the Secret name: the rendered
-		// command passes this same path as --secret-mount, so a custom
-		// secretName cannot leave the dump looking somewhere else.
+
 		mounts = append(mounts, corev1.VolumeMount{
 			Name: "db-credentials", MountPath: db.MountPath(), ReadOnly: true,
 		})
@@ -459,11 +403,6 @@ func buildVolumes(sb *borgbasev1.ScheduledBackup) ([]corev1.Volume, []corev1.Vol
 	return volumes, mounts
 }
 
-// buildAffinity schedules the backup pod next to the data it reads.
-//
-// Precedence matters: a backup with an attached claim must land on the node
-// holding that claim, even when it also dumps a database, because a
-// ReadWriteOnce volume can only be mounted where the app already has it.
 func buildAffinity(sb *borgbasev1.ScheduledBackup) *corev1.Affinity {
 	if sb.Spec.Affinity != nil {
 		return sb.Spec.Affinity
@@ -488,8 +427,7 @@ func buildAffinity(sb *borgbasev1.ScheduledBackup) *corev1.Affinity {
 			labelController: mariadbName,
 		})
 	case borgbasev1.DatabaseEngineCNPG:
-		// Soft, not hard: dumping across nodes is merely slower, and a hard
-		// constraint would leave backups unschedulable during a failover.
+
 		return &corev1.Affinity{
 			PodAffinity: &corev1.PodAffinity{
 				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{{

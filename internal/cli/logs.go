@@ -20,10 +20,9 @@ import (
 	"github.com/clevyr/borgbase-operator/internal/backup"
 )
 
+// ErrNoRuns means the backup has never run.
 var ErrNoRuns = errors.New("no backup runs found")
 
-// Job pods carry the job name under one of these labels depending on the
-// cluster version; the batch.kubernetes.io prefix landed in 1.27.
 var jobNameLabels = []string{"batch.kubernetes.io/job-name", "job-name"}
 
 func newLogsCommand(f *Factory) *cobra.Command {
@@ -104,7 +103,6 @@ func runLogs(
 	return streamJobLogs(ctx, c, cs, out, job, opts)
 }
 
-// selectJob picks the run to read, newest first.
 func selectJob(jobs []batchv1.Job, previous bool) (*batchv1.Job, error) {
 	want := 0
 	if previous {
@@ -119,10 +117,7 @@ func selectJob(jobs []batchv1.Job, previous bool) (*batchv1.Job, error) {
 	return &jobs[want], nil
 }
 
-// BackupJobs returns the Jobs belonging to a ScheduledBackup, newest first.
-//
-// Scheduled runs are owned by the generated CronJob; runs triggered directly
-// are owned by the ScheduledBackup itself, so both owners are accepted.
+// BackupJobs returns the Jobs owned by a backup, whether scheduled or triggered.
 func BackupJobs(ctx context.Context, c client.Client, sb *borgbasev1.ScheduledBackup) ([]batchv1.Job, error) {
 	owners := map[types.UID]bool{sb.UID: true}
 
@@ -153,8 +148,6 @@ func BackupJobs(ctx context.Context, c client.Client, sb *borgbasev1.ScheduledBa
 	return jobs, nil
 }
 
-// jobStart falls back to the creation timestamp, since a Job that has not been
-// scheduled yet has no start time.
 func jobStart(job *batchv1.Job) metav1.Time {
 	if job.Status.StartTime != nil {
 		return *job.Status.StartTime

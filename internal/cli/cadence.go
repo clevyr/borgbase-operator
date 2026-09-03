@@ -8,19 +8,11 @@ import (
 	"time"
 )
 
-// cadence describes how often a cron expression fires, independent of which
-// minute it happens to land on.
-//
-// Migration deliberately hands a hand-jittered schedule back to the operator as
-// a cadence, which moves the time. Comparing expressions verbatim would then
-// report a difference for every app and hide the ones that matter, so parity
-// asks the question that actually matters: does it still fire just as often?
 type cadence struct {
 	fires int
 	gaps  []int
 }
 
-// equal reports whether two schedules fire equally often, with the same spacing.
 func (c cadence) equal(other cadence) bool {
 	return c.fires == other.fires && slices.Equal(c.gaps, other.gaps)
 }
@@ -42,10 +34,10 @@ func (c cadence) String() string {
 // cadenceOf expands a five-field cron expression over 28 days and records how
 // often it fires and how far apart.
 //
-// Note that when both day-of-month and day-of-week are restricted, real cron
-// ORs them where this ANDs. Migration only ever converts expressions whose
-// day, month and weekday fields are all "*", and a schedule it leaves pinned is
-// compared against itself, so the difference cannot arise here.
+// When both day-of-month and day-of-week are restricted, real cron ORs them
+// where this ANDs. Migration only ever converts expressions whose day, month and
+// weekday fields are all "*", and a schedule it leaves pinned is compared against
+// itself, so the difference cannot arise here. It would in any other caller.
 func cadenceOf(expr string) (cadence, error) {
 	fields := strings.Fields(expr)
 	if len(fields) != 5 {
@@ -62,8 +54,6 @@ func cadenceOf(expr string) (cadence, error) {
 		matchers[i] = m
 	}
 
-	// Starts on a Monday, and 28 days covers every weekday and a whole set of
-	// month days.
 	start := time.Date(2026, time.January, 5, 0, 0, 0, 0, time.UTC)
 	const window = 28 * 24 * 60
 
@@ -84,7 +74,6 @@ func cadenceOf(expr string) (cadence, error) {
 	return cadence{fires: len(fired), gaps: gaps}, nil
 }
 
-// fieldMatcher builds a predicate for one cron field.
 func fieldMatcher(field string, minValue, maxValue int) (func(int) bool, error) {
 	allowed := map[int]bool{}
 

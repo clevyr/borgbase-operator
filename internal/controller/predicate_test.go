@@ -38,8 +38,6 @@ func TestIgnoreOwnStatusWrites(t *testing.T) {
 			want: true,
 		},
 		{
-			// Filtering this would strand the object in Terminating forever,
-			// because the finalizer would never be reconciled away.
 			name: "deletion always passes",
 			old:  repoWith(func(r *borgbasev1.Repository) {}),
 			new: repoWith(func(r *borgbasev1.Repository) {
@@ -70,7 +68,6 @@ func TestIgnoreOwnStatusWrites(t *testing.T) {
 	}
 }
 
-// Creates and deletes must never be filtered.
 func TestIgnoreOwnStatusWritesPassesCreateAndDelete(t *testing.T) {
 	p := ignoreOwnStatusWrites()
 	obj := repoWith(func(r *borgbasev1.Repository) {})
@@ -82,8 +79,6 @@ func TestIgnoreOwnStatusWritesPassesCreateAndDelete(t *testing.T) {
 	}
 }
 
-// An annotation change does not advance the generation, so without an explicit
-// watch the trigger annotation would land on the object and never be acted on.
 func TestIgnoreOwnStatusWritesPassesWatchedAnnotations(t *testing.T) {
 	annotated := func(v string) *borgbasev1.Repository {
 		return repoWith(func(r *borgbasev1.Repository) {
@@ -114,7 +109,6 @@ func TestIgnoreOwnStatusWritesPassesWatchedAnnotations(t *testing.T) {
 			want:    true,
 		},
 		{
-			// Re-reconciling the same request must not run the work twice.
 			name:    "unchanged annotation is still filtered",
 			old:     annotated("2026-09-03T14:12:00Z"),
 			new:     annotated("2026-09-03T14:12:00Z"),

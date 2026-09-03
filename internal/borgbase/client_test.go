@@ -13,7 +13,6 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-// stub serves canned GraphQL responses and records the requests it received.
 type stub struct {
 	response string
 	requests []map[string]any
@@ -83,8 +82,6 @@ func TestGetSendsBearerTokenAndParsesRepo(t *testing.T) {
 	}
 }
 
-// BorgBase reports a missing repository as a GraphQL error, which must surface
-// as ErrNotFound so the controller can tell "absent" from "broken".
 func TestGetMapsNotFound(t *testing.T) {
 	s := &stub{response: `{"errors":[{"message":"Repository not found"}]}`}
 	c, done := s.server(t)
@@ -105,8 +102,6 @@ func TestGetNullRepoIsNotFound(t *testing.T) {
 	}
 }
 
-// Every repository this operator creates must be restic-format, since the
-// format cannot be changed afterwards.
 func TestAddAlwaysRequestsResticFormat(t *testing.T) {
 	s := &stub{response: `{"data":{"repoAdd":{"repoAdded":{
 		"id":"new12345","name":"myapp-prod","region":"us","format":"restic",
@@ -148,7 +143,6 @@ func TestAddOmitsQuotaWhenUnset(t *testing.T) {
 	}
 }
 
-// repoEdit has no format argument, so sending one would be an API error.
 func TestEditNeverSendsFormat(t *testing.T) {
 	s := &stub{response: `{"data":{"repoEdit":{"repoEdited":{
 		"id":"a1b2c3d4","format":"restic","htpasswd":"t","server":{"hostname":"h"}}}}}`}
@@ -160,8 +154,7 @@ func TestEditNeverSendsFormat(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Edit() error = %v", err)
 	}
-	// `format` legitimately appears in the response selection set; what must
-	// not appear is a $format argument, which repoEdit does not accept.
+
 	if strings.Contains(s.lastQuery(), "$format") {
 		t.Error("repoEdit must not pass format; it is fixed at creation")
 	}
@@ -170,8 +163,6 @@ func TestEditNeverSendsFormat(t *testing.T) {
 	}
 }
 
-// Two repositories sharing a name is ambiguous. Picking one could back up into
-// the wrong place, so the client refuses instead of guessing.
 func TestFindByNameRefusesAmbiguousMatches(t *testing.T) {
 	s := &stub{response: `{"data":{"repoList":[
 		{"id":"aaa","name":"myapp-prod","format":"restic"},
@@ -185,8 +176,6 @@ func TestFindByNameRefusesAmbiguousMatches(t *testing.T) {
 	}
 }
 
-// repoList's name argument is a server-side filter of undocumented semantics,
-// so near-misses must be discarded rather than adopted.
 func TestFindByNameRequiresExactMatch(t *testing.T) {
 	s := &stub{response: `{"data":{"repoList":[{"id":"aaa","name":"myapp-prod-old","format":"restic"}]}}`}
 	c, done := s.server(t)
@@ -259,9 +248,6 @@ func TestNonOKStatusIsAnError(t *testing.T) {
 	}
 }
 
-// repoEdit applies whatever it is sent, so a field the spec says nothing about
-// must not be sent at all: doing so would clear a setting made in the BorgBase
-// UI every time the operator reconciled.
 func TestEditOmitsUnsetFields(t *testing.T) {
 	s := &stub{response: `{"data":{"repoEdit":{"repoEdited":{
 		"id":"a1b2c3d4","format":"restic","htpasswd":"t","server":{"hostname":"h"}}}}}`}
@@ -285,8 +271,6 @@ func TestEditOmitsUnsetFields(t *testing.T) {
 	}
 }
 
-// ok=false with no errors array means the repository is still there. Reporting
-// success would drop the finalizer and orphan it.
 func TestDeleteChecksOK(t *testing.T) {
 	s := &stub{response: `{"data":{"repoDelete":{"ok":false}}}`}
 	c, done := s.server(t)
@@ -302,9 +286,6 @@ func TestDeleteChecksOK(t *testing.T) {
 	}
 }
 
-// "does not exist" is not by itself a missing repository. Classifying an
-// unrelated failure as ErrNotFound would send FindByName on to create a second
-// repository beside the real one.
 func TestNotFoundHeuristicIsNarrow(t *testing.T) {
 	tests := []struct {
 		message string
@@ -329,8 +310,6 @@ func TestNotFoundHeuristicIsNarrow(t *testing.T) {
 	}
 }
 
-// A bare status line gives no hint whether a token is wrong, expired or
-// under-scoped, so the body comes along.
 func TestNonOKStatusIncludesBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

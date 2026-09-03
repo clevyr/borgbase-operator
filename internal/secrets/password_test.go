@@ -25,8 +25,6 @@ func TestGeneratePassword(t *testing.T) {
 	}
 }
 
-// The alphabet must be safe to drop into a URL and a shell without escaping,
-// since the password is used in both.
 func TestAlphabetNeedsNoEscaping(t *testing.T) {
 	for _, r := range alphabet {
 		isAlnum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')

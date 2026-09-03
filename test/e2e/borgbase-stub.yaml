@@ -1,6 +1,3 @@
-# A stand-in for the BorgBase API, so the e2e tests can exercise the Repository
-# controller without real credentials. --borgbase-endpoint points the operator
-# here.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -57,8 +54,6 @@ spec:
     - port: 8080
       targetPort: 8080
 ---
-# The token the operator reads by default. Its value is never checked by the
-# stub; what matters is that the lookup succeeds.
 apiVersion: v1
 kind: Secret
 metadata:

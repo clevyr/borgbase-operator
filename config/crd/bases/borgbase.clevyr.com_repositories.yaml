@@ -33,7 +33,7 @@ spec:
     name: v1
     schema:
       openAPIV3Schema:
-        description: Repository is the Schema for the repositories API.
+        description: Repository is a restic repository hosted on BorgBase.
         properties:
           apiVersion:
             description: |-
@@ -53,20 +53,17 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of Repository
+            description: RepositorySpec defines the desired state of a Repository.
             properties:
               alertDays:
-                description: |-
-                  alertDays makes BorgBase alert when the repository has not been written
-                  to for this many days. Unset leaves the account default. Reconciled on
-                  every pass.
+                description: AlertDays is how many quiet days pass before BorgBase
+                  alerts. Unset means no alert.
                 format: int32
                 minimum: 0
                 type: integer
               apiTokenSecretRef:
-                description: |-
-                  apiTokenSecretRef overrides the operator's default BorgBase API token.
-                  Use it to point a repository at a different BorgBase account.
+                description: APITokenSecretRef points at the BorgBase API token. Defaults
+                  to the operator's own token.
                 properties:
                   key:
                     description: The key of the secret to select from.  Must be a
@@ -89,55 +86,32 @@ spec:
                 type: object
                 x-kubernetes-map-type: atomic
               appendOnly:
-                description: |-
-                  appendOnly prevents clients from deleting existing data, which protects
-                  backups from a compromised host. `restic forget --prune` cannot run against
-                  an append-only repository. Reconciled on every pass.
+                description: AppendOnly makes the repository reject deletes and overwrites.
                 type: boolean
               deletionPolicy:
                 default: Retain
-                description: |-
-                  deletionPolicy controls whether deleting this resource also deletes the
-                  BorgBase repository. Retain is strongly preferred: Delete destroys every
-                  snapshot in the repository and cannot be undone.
+                description: DeletionPolicy decides whether the BorgBase repository
+                  outlives this resource.
                 enum:
                 - Retain
                 - Delete
                 type: string
               existingRepositoryID:
-                description: |-
-                  existingRepositoryID adopts an already-existing BorgBase repository by
-                  its opaque ID (for example "a1b2c3d4"). When set, the operator only ever
-                  looks the repository up; it will never create one, and it will never
-                  generate a password. This is the migration path.
-
-                  The field is immutable, and cannot be added after a repository has been
-                  created for this resource: repointing a Repository at a different
-                  BorgBase repo would silently orphan the original backups.
+                description: ExistingRepositoryID adopts an existing BorgBase repository
+                  instead of creating one.
                 pattern: ^[a-z0-9]{4,32}$
                 type: string
               interval:
                 default: 1h
-                description: |-
-                  interval is how often to re-reconcile against the BorgBase API, which
-                  also refreshes usage and quota in the status.
-
-                  The pattern matters: the API server stores this as a plain string, and a
-                  value Go cannot parse would break decoding of every Repository at once.
+                description: Interval is how often the repository is reconciled against
+                  the BorgBase API.
                 type: string
                 x-kubernetes-validations:
                 - message: must be a Go duration such as 30m, 1h or 1h30m
                   rule: self == '0' || self.matches('^([0-9]+([.][0-9]+)?(ns|us|ms|s|m|h))+$')
               passwordSecretRef:
-                description: |-
-                  passwordSecretRef seeds the restic encryption password from an existing
-                  Secret instead of generating one. Required when adopting a repository
-                  that already holds snapshots, since the original password is the only
-                  way to read them.
-
-                  The operator reads this Secret and never writes to it, so it remains a
-                  disaster-recovery copy of the password. It must therefore be a different
-                  Secret from secretName.
+                description: PasswordSecretRef seeds the restic password. Required
+                  when adopting.
                 properties:
                   key:
                     description: The key of the secret to select from.  Must be a
@@ -160,48 +134,39 @@ spec:
                 type: object
                 x-kubernetes-map-type: atomic
               quotaGiB:
-                description: |-
-                  quotaGiB caps repository size. Unset means no quota. The value is passed
-                  to BorgBase's quota field unchanged, and BorgBase reports sizes in GB, so
-                  treat the unit as whatever BorgBase means by it. Reconciled on every
-                  pass, so changing it here updates the repository.
+                description: QuotaGiB caps repository size. Unset means no quota.
                 format: int32
                 minimum: 1
                 type: integer
               region:
                 default: us
-                description: |-
-                  region is the BorgBase region a new repository is created in. Ignored
-                  when adopting.
+                description: Region is the BorgBase region to create the repository
+                  in.
                 type: string
               repositoryName:
-                description: |-
-                  repositoryName is the name given to a newly created BorgBase repository.
-                  Defaults to the namespace of this resource. Ignored when adopting.
+                description: RepositoryName is the name given to the repository in
+                  BorgBase. Defaults to the namespace.
                 maxLength: 64
                 type: string
               secretName:
-                description: |-
-                  secretName is the Secret the operator writes RESTIC_REPOSITORY and
-                  RESTIC_PASSWORD into. Defaults to "<name>-borgbase". The operator only
-                  writes to Secrets it created itself, so this must not name a Secret that
-                  something else manages.
+                description: SecretName overrides the name of the Secret the operator
+                  writes credentials to.
                 maxLength: 253
                 type: string
               suspend:
-                description: suspend pauses reconciliation of this resource.
+                description: Suspend stops reconciliation without deleting the resource.
                 type: boolean
             type: object
           status:
-            description: status defines the observed state of Repository
+            description: RepositoryStatus is the observed state of a Repository.
             properties:
               adopted:
-                description: adopted reports whether this repository was adopted rather
-                  than created.
+                description: Adopted reports whether the repository pre-existed this
+                  resource.
                 type: boolean
               conditions:
-                description: conditions represent the current state of the Repository
-                  resource.
+                description: Conditions holds the latest observations of the repository's
+                  state.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -261,31 +226,27 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               currentUsage:
-                description: currentUsage is the repository size reported by BorgBase.
+                description: CurrentUsage is the human-readable size of the repository.
                 type: string
               initialized:
-                description: initialized reports whether `restic init` has succeeded.
+                description: Initialized reports whether restic init has completed.
                 type: boolean
               observedGeneration:
-                description: observedGeneration is the .metadata.generation this status
+                description: ObservedGeneration is the spec generation this status
                   was computed from.
                 format: int64
                 type: integer
               quota:
-                description: quota is the configured size cap, if any.
+                description: Quota is the human-readable quota, if one is set.
                 type: string
               repositoryID:
-                description: |-
-                  repositoryID is the BorgBase repository ID. Recording it here is the
-                  point of the operator: it makes the app-to-repo mapping visible without
-                  decrypting anything.
+                description: RepositoryID is the BorgBase repository ID.
                 type: string
               secretName:
-                description: secretName is the Secret the credentials were written
-                  to.
+                description: SecretName is the Secret holding the repository credentials.
                 type: string
               server:
-                description: server is the BorgBase host serving this repository.
+                description: Server is the SSH host the repository lives on.
                 type: string
             type: object
         required:

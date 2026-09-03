@@ -110,8 +110,7 @@ func credentials(ctx context.Context, c client.Client, repo *borgbasev1.Reposito
 	return &secret, nil
 }
 
-// RedactResticURL hides the password embedded in a rest: repository URL, which
-// has the form rest:https://<id>:<password>@<host>.
+// RedactResticURL replaces the password in a restic rest: URL.
 func RedactResticURL(raw string) string {
 	scheme, rest, ok := strings.Cut(raw, ":")
 	if !ok || scheme != "rest" {
@@ -127,12 +126,10 @@ func RedactResticURL(raw string) string {
 	}
 
 	u.User = url.UserPassword(u.User.Username(), redacted)
-	// url.String escapes the redaction marker, so put it back verbatim.
+
 	return scheme + ":" + strings.ReplaceAll(u.String(), url.QueryEscape(redacted), redacted)
 }
 
-// shellQuote renders a value safe to eval. Passwords are generated
-// alphanumeric, but an adopted repository may carry anything.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
