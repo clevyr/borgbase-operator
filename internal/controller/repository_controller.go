@@ -562,7 +562,10 @@ func (r *RepositoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&borgbasev1.Repository{}).
-		Owns(&corev1.Secret{}).
+		// Secrets are deliberately not owned or watched: doing so would build
+		// an informer over every Secret in the cluster. A credentials Secret
+		// deleted out from under us is recreated on the next periodic
+		// reconcile rather than instantly.
 		Owns(&batchv1.Job{}).
 		Named("repository").
 		Complete(r)

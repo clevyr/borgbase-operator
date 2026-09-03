@@ -15,12 +15,17 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 
 	borgbasev1 "github.com/clevyr/borgbase-operator/api/v1"
@@ -187,9 +192,41 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
+	// managedByOperator bounds what the informer cache holds. Without it the
+	// manager caches every object of every watched type, cluster-wide.
+	managedByOperator := cache.ByObject{
+		Label: labels.SelectorFromSet(labels.Set{
+			"app.kubernetes.io/managed-by": "borgbase-operator",
+		}),
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsServerOptions,
+		Scheme:  scheme,
+		Metrics: metricsServerOptions,
+		Cache: cache.Options{
+			// Only this operator's own Jobs and CronJobs are worth watching.
+			// Caching every Job in the cluster would grow without bound as
+			// unrelated CronJobs fire.
+			ByObject: map[client.Object]cache.ByObject{
+				&batchv1.Job{}:     managedByOperator,
+				&batchv1.CronJob{}: managedByOperator,
+			},
+		},
+		Client: client.Options{
+			Cache: &client.CacheOptions{
+				// Never cache Secrets or PersistentVolumeClaims. This operator
+				// reads a handful of Secrets by name, but a cached client
+				// builds an informer over all of them, which on a busy cluster
+				// means holding every Helm release secret and every reflected
+				// pull secret in memory. That is both the reason the manager
+				// was being OOM killed and an unnecessary place for every
+				// secret in the cluster to sit.
+				DisableFor: []client.Object{
+					&corev1.Secret{},
+					&corev1.PersistentVolumeClaim{},
+				},
+			},
+		},
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
