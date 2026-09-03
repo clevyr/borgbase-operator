@@ -380,16 +380,17 @@ func (r *RepositoryReconciler) reconcileInitJob(
 			repo.Status.Initialized = true
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "Initialized", "Initialize",
 				"restic init completed successfully")
+			if err := r.deleteJob(ctx, &job); err != nil {
+				return 0, err
+			}
 			return 0, nil
 		}
 		if isJobFailed(&job) {
-			// Remove the exhausted Job so the next reconcile starts a fresh
-			// one; without this a transient failure would wedge permanently.
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "InitFailed", "Initialize",
 				"restic init failed; retrying")
-			policy := metav1.DeletePropagationBackground
-			if err := r.Delete(ctx, &job, &client.DeleteOptions{PropagationPolicy: &policy}); err != nil &&
-				!apierrors.IsNotFound(err) {
+			// Remove the exhausted Job so the next reconcile starts a fresh
+			// one; without this a transient failure would wedge permanently.
+			if err := r.deleteJob(ctx, &job); err != nil {
 				return 0, err
 			}
 			return 5 * time.Minute, nil
@@ -468,6 +469,18 @@ func (r *RepositoryReconciler) buildInitJob(repo *borgbasev1.Repository, name st
 			},
 		},
 	}
+}
+
+// deleteJob removes a Job and the pods it created.
+func (r *RepositoryReconciler) deleteJob(ctx context.Context, job *batchv1.Job) error {
+	// Background propagation so the Completed pod goes with the Job; without
+	// it the pod is orphaned and lingers.
+	policy := metav1.DeletePropagationBackground
+	if err := r.Delete(ctx, job, &client.DeleteOptions{PropagationPolicy: &policy}); err != nil &&
+		!apierrors.IsNotFound(err) {
+		return fmt.Errorf("deleting init job %s: %w", job.Name, err)
+	}
+	return nil
 }
 
 func isJobFailed(job *batchv1.Job) bool {

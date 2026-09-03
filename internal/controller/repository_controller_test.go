@@ -250,6 +250,38 @@ func TestCreatesRepositoryAndInitJob(t *testing.T) {
 	}
 }
 
+// A finished init Job should not linger as a Completed pod waiting for its TTL.
+func TestSucceededInitJobIsRemoved(t *testing.T) {
+	api := newFakeAPI()
+	r, c := newHarness(t, api, repositoryFixture(nil))
+	reconcileN(t, r, 2)
+
+	key := types.NamespacedName{Namespace: testNS, Name: "restic-init"}
+	var job batchv1.Job
+	if err := c.Get(context.Background(), key, &job); err != nil {
+		t.Fatalf("expected an init job: %v", err)
+	}
+
+	// Mark it succeeded, as the Job controller would.
+	job.Status.Succeeded = 1
+	if err := c.Status().Update(context.Background(), &job); err != nil {
+		t.Fatal(err)
+	}
+	reconcileN(t, r, 1)
+
+	var repo borgbasev1.Repository
+	if err := c.Get(context.Background(),
+		types.NamespacedName{Namespace: testNS, Name: resticName}, &repo); err != nil {
+		t.Fatal(err)
+	}
+	if !repo.Status.Initialized {
+		t.Error("repository should be marked initialized")
+	}
+	if err := c.Get(context.Background(), key, &job); !apierrors.IsNotFound(err) {
+		t.Errorf("init job should have been deleted after succeeding, got %v", err)
+	}
+}
+
 // Retain is the default precisely so that removing a Kubernetes object can
 // never destroy backups.
 func TestDeletionPolicyRetainKeepsRepositoryAndSecret(t *testing.T) {
