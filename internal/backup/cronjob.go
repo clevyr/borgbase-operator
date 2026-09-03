@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
+	"time"
 
 	borgbasev1 "github.com/clevyr/borgbase-operator/api/v1"
 	"github.com/clevyr/borgbase-operator/internal/healthchecks"
@@ -57,10 +59,65 @@ type Config struct {
 }
 
 // CacheName returns the name of the restic cache PVC for a backup.
+// LabelTrigger marks how a backup Job was started. Scheduled runs carry no
+// such label; only one-off runs are tagged.
+const (
+	LabelTrigger  = "borgbase.clevyr.com/trigger"
+	TriggerManual = "manual"
+)
+
 func CacheName(sb *borgbasev1.ScheduledBackup) string { return sb.Name + "-cache" }
 
 // CronJobName returns the name of the CronJob for a backup.
 func CronJobName(sb *borgbasev1.ScheduledBackup) string { return sb.Name + "-backup" }
+
+// maxManualJobName leaves room for the suffix the Job controller appends when
+// it names pods.
+const maxManualJobName = 52
+
+// ManualJobName is the Job for a one-off run requested at the given time.
+//
+// It is derived from the trigger timestamp rather than randomised, so a
+// reconcile that runs twice for one trigger collides on the name instead of
+// starting a second backup.
+func ManualJobName(sb *borgbasev1.ScheduledBackup, at time.Time) string {
+	suffix := "-manual-" + strconv.FormatInt(at.Unix(), 36)
+	name := sb.Name
+	if limit := maxManualJobName - len(suffix); len(name) > limit {
+		name = name[:limit]
+	}
+	return name + suffix
+}
+
+// BuildManualJob renders a one-off run of a ScheduledBackup.
+//
+// It reuses the CronJob's job template verbatim, so a manual backup does
+// exactly what a scheduled one does, and it is owned by the ScheduledBackup
+// rather than the CronJob so the CronJob's history limits cannot delete it.
+func BuildManualJob(
+	sb *borgbasev1.ScheduledBackup,
+	repo *borgbasev1.Repository,
+	cfg Config,
+	at time.Time,
+) (*batchv1.Job, error) {
+	tmpl, err := BuildJobTemplate(sb, repo, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	labels := maps.Clone(tmpl.Labels)
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels[LabelTrigger] = TriggerManual
+
+	return &batchv1.Job{
+		Name:      ManualJobName(sb, at),
+		Namespace: sb.Namespace,
+		Labels:    labels,
+		Spec:      tmpl.Spec,
+	}, nil
+}
 
 // cacheEnabled reports whether the cache volume should be created.
 func cacheEnabled(sb *borgbasev1.ScheduledBackup) bool {
@@ -121,20 +178,18 @@ func commonLabels(sb *borgbasev1.ScheduledBackup) map[string]string {
 	}
 }
 
-// BuildCronJob renders the CronJob that runs a ScheduledBackup.
-func BuildCronJob(
+// BuildJobTemplate renders the Job that runs a ScheduledBackup.
+//
+// It is shared by the generated CronJob and by one-off runs, so a manual backup
+// is byte-for-byte the same work as a scheduled one.
+func BuildJobTemplate(
 	sb *borgbasev1.ScheduledBackup,
 	repo *borgbasev1.Repository,
 	cfg Config,
-) (*batchv1.CronJob, error) {
-	schedule, err := ResolveSchedule(sb.Spec.Schedule, sb.Namespace+"/"+sb.Name)
-	if err != nil {
-		return nil, err
-	}
-
+) (batchv1.JobTemplateSpec, error) {
 	script, err := Render(&sb.Spec)
 	if err != nil {
-		return nil, err
+		return batchv1.JobTemplateSpec{}, err
 	}
 
 	image := sb.Spec.Image
@@ -142,12 +197,12 @@ func BuildCronJob(
 		image = cfg.Image
 	}
 	if image == "" {
-		return nil, fmt.Errorf("no backup image configured")
+		return batchv1.JobTemplateSpec{}, fmt.Errorf("no backup image configured")
 	}
 
 	env, err := buildEnv(sb, cfg)
 	if err != nil {
-		return nil, err
+		return batchv1.JobTemplateSpec{}, err
 	}
 	volumes, mounts := buildVolumes(sb)
 
@@ -167,6 +222,48 @@ func BuildCronJob(
 		container.WorkingDir = sb.Spec.Volume.EffectiveMountPath()
 	}
 
+	return batchv1.JobTemplateSpec{
+		Labels: commonLabels(sb),
+		Spec: batchv1.JobSpec{
+			TTLSecondsAfterFinished: ptr.To(ttlSecondsAfterFinished),
+			// A backup that fails should wait for its next scheduled run rather
+			// than retrying immediately against a repository that may be locked
+			// by the failed attempt.
+			BackoffLimit: ptr.To(int32(0)),
+			Template: corev1.PodTemplateSpec{
+				Labels: podLabels(sb),
+				Spec: corev1.PodSpec{
+					RestartPolicy: corev1.RestartPolicyNever,
+					Containers:    []corev1.Container{container},
+					Volumes:       volumes,
+					Affinity:      buildAffinity(sb),
+					// The backup talks to restic and the database, never to the
+					// API server, so a mounted token is exposure of the
+					// namespace's default ServiceAccount for nothing.
+					AutomountServiceAccountToken: ptr.To(false),
+					SecurityContext:              podSecurityContext(sb),
+				},
+			},
+		},
+	}, nil
+}
+
+// BuildCronJob renders the CronJob that runs a ScheduledBackup.
+func BuildCronJob(
+	sb *borgbasev1.ScheduledBackup,
+	repo *borgbasev1.Repository,
+	cfg Config,
+) (*batchv1.CronJob, error) {
+	schedule, err := ResolveSchedule(sb.Spec.Schedule, sb.Namespace+"/"+sb.Name)
+	if err != nil {
+		return nil, err
+	}
+
+	jobTemplate, err := BuildJobTemplate(sb, repo, cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	return &batchv1.CronJob{
 		Name:      CronJobName(sb),
 		Namespace: sb.Namespace,
@@ -178,31 +275,7 @@ func BuildCronJob(
 			Suspend:                    ptr.To(sb.Spec.Suspend),
 			SuccessfulJobsHistoryLimit: sb.Spec.SuccessfulJobsHistoryLimit,
 			FailedJobsHistoryLimit:     sb.Spec.FailedJobsHistoryLimit,
-			JobTemplate: batchv1.JobTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: commonLabels(sb)},
-				Spec: batchv1.JobSpec{
-					TTLSecondsAfterFinished: ptr.To(ttlSecondsAfterFinished),
-					// A backup that fails should wait for its next scheduled
-					// run rather than retrying immediately against a repository
-					// that may be locked by the failed attempt.
-					BackoffLimit: ptr.To(int32(0)),
-					Template: corev1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{Labels: podLabels(sb)},
-						Spec: corev1.PodSpec{
-							RestartPolicy: corev1.RestartPolicyNever,
-							Containers:    []corev1.Container{container},
-							Volumes:       volumes,
-							Affinity:      buildAffinity(sb),
-							// The backup talks to restic and the database, never
-							// to the API server, so a mounted token is exposure
-							// of the namespace's default ServiceAccount for
-							// nothing.
-							AutomountServiceAccountToken: ptr.To(false),
-							SecurityContext:              podSecurityContext(sb),
-						},
-					},
-				},
-			},
+			JobTemplate:                jobTemplate,
 		},
 	}, nil
 }
