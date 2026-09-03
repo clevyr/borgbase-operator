@@ -281,26 +281,33 @@ func TestUserEnvIsSorted(t *testing.T) {
 	}
 }
 
-// dumpdb is invoked without --secret-mount, so it reads a fixed path per
-// engine. Mounting at a path derived from the Secret name, as this used to,
-// left a custom secretName's credentials somewhere dumpdb never looks: the
-// backup then failed at run time with nothing wrong at apply time.
-func TestDatabaseSecretMountsWhereDumpdbLooks(t *testing.T) {
+// Mounting at a path derived from the Secret name, as this once did, left a
+// custom secretName's credentials somewhere the dump never looked: the backup
+// failed at run time with nothing wrong at apply time.
+// The Secret must be mounted where the dump tool is told to look, whatever the
+// Secret is called and whatever that tool would have defaulted to on its own.
+// Asserting the two agree is the point: a fixed path checked against a literal
+// would pass even if the rendered command pointed somewhere else.
+func TestDatabaseSecretMountsWhereTheDumpToolIsTold(t *testing.T) {
 	tests := []struct {
 		name       string
 		engine     borgbasev1.DatabaseEngine
 		secretName string
-		wantPath   string
 	}{
-		{"cnpg default", borgbasev1.DatabaseEngineCNPG, "", "/postgresql-app"},
-		{"cnpg custom secret", borgbasev1.DatabaseEngineCNPG, "myapp-db-creds", "/postgresql-app"},
-		{"mariadb default", borgbasev1.DatabaseEngineMariaDB, "", "/mariadb"},
-		{"mariadb custom secret", borgbasev1.DatabaseEngineMariaDB, "legacy-mysql", "/mariadb"},
+		{"cnpg default", borgbasev1.DatabaseEngineCNPG, ""},
+		{"cnpg custom secret", borgbasev1.DatabaseEngineCNPG, "myapp-db-creds"},
+		{"mariadb default", borgbasev1.DatabaseEngineMariaDB, ""},
+		{"mariadb custom secret", borgbasev1.DatabaseEngineMariaDB, "legacy-mysql"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			sourceType := borgbasev1.SourceTypeCNPG
+			if tt.engine == borgbasev1.DatabaseEngineMariaDB {
+				sourceType = borgbasev1.SourceTypeMariaDB
+			}
 			sb := testBackup(func(s *borgbasev1.ScheduledBackup) {
+				s.Spec.Sources = []borgbasev1.BackupSource{{Type: sourceType}}
 				s.Spec.Database = &borgbasev1.DatabaseSpec{
 					Engine:     tt.engine,
 					SecretName: tt.secretName,
@@ -322,8 +329,13 @@ func TestDatabaseSecretMountsWhereDumpdbLooks(t *testing.T) {
 			if mount == nil {
 				t.Fatal("no db-credentials mount")
 			}
-			if mount.MountPath != tt.wantPath {
-				t.Errorf("mounted at %q, want %q", mount.MountPath, tt.wantPath)
+
+			// The rendered command must name the very path it is mounted at.
+			script := strings.Join(spec.Containers[0].Command, " ")
+			want := "--secret-mount=" + mount.MountPath
+			if !strings.Contains(script, want) {
+				t.Errorf("mounted at %q but the command does not pass %q:\n%s",
+					mount.MountPath, want, script)
 			}
 
 			// The volume still refers to whatever Secret was asked for.
@@ -336,12 +348,12 @@ func TestDatabaseSecretMountsWhereDumpdbLooks(t *testing.T) {
 			if volume == nil || volume.Secret == nil {
 				t.Fatal("no db-credentials volume")
 			}
-			want := tt.secretName
-			if want == "" {
-				want = sb.Spec.Database.EffectiveSecretName()
+			wantSecret := tt.secretName
+			if wantSecret == "" {
+				wantSecret = sb.Spec.Database.EffectiveSecretName()
 			}
-			if volume.Secret.SecretName != want {
-				t.Errorf("volume references Secret %q, want %q", volume.Secret.SecretName, want)
+			if volume.Secret.SecretName != wantSecret {
+				t.Errorf("volume references Secret %q, want %q", volume.Secret.SecretName, wantSecret)
 			}
 		})
 	}

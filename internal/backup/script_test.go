@@ -56,7 +56,7 @@ func TestRender(t *testing.T) {
 			},
 			want: `exec > >(ts '%H:%M:%S') 2>&1
 set -eu
-restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg
+restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/borgbase/database
 restic backup --retry-lock=5m0s --tag=files app \
   --exclude='**/temp*' \
   --exclude='app/export-logs'
@@ -76,7 +76,7 @@ restic cache --cleanup
 			},
 			want: `exec > >(ts '%H:%M:%S') 2>&1
 set -eu
-restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb mariadb -- --skip-ssl
+restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb mariadb --secret-mount=/var/run/secrets/borgbase/database -- --skip-ssl
 restic backup --retry-lock=5m0s --tag=files . \
   --exclude='dumps'
 restic forget --prune --retry-lock=5m0s --keep-daily=90 --keep-monthly=24 --keep-yearly=10
@@ -95,8 +95,8 @@ restic cache --cleanup
 			},
 			want: `exec > >(ts '%H:%M:%S') 2>&1
 set -eu
-restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg
-restic backup --retry-lock=5m0s --tag=db-external --stdin-from-command -- dumpdb cnpg --database=reporting
+restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/borgbase/database
+restic backup --retry-lock=5m0s --tag=db-external --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/borgbase/database --database=reporting
 restic forget --prune --retry-lock=5m0s --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 `,
@@ -124,7 +124,7 @@ restic cache --cleanup
 			},
 			want: `exec > >(ts '%H:%M:%S') 2>&1
 set -eu
-restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg
+restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/borgbase/database
 restic forget --prune --retry-lock=5m0s --keep-hourly=28 --keep-daily=90 --keep-monthly=24 --keep-yearly=10
 restic cache --cleanup
 `,
@@ -147,7 +147,7 @@ restic cache --cleanup
 			},
 			want: `exec > >(ts '%H:%M:%S') 2>&1
 set -eu
-restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg
+restic backup --retry-lock=5m0s --tag=db --stdin-from-command -- dumpdb cnpg --secret-mount=/var/run/secrets/borgbase/database
 restic cache --cleanup
 `,
 		},

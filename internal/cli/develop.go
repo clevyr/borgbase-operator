@@ -326,13 +326,17 @@ func originalPlan(path string) (plan, error) {
 // lock or fails immediately; it selects no different data. Both are deliberate
 // improvements over the hand-written scripts, so comparing them verbatim would
 // report a difference on every app and hide the ones that matter.
-var retryLockFlag = regexp.MustCompile(` --retry-lock=\S+`)
+//
+// --secret-mount is the same kind of change: the hand-written scripts relied on
+// the dump tool's per-engine default, and naming the path explicitly points at
+// the same credentials rather than different ones.
+var ignoredFlags = regexp.MustCompile(` --(retry-lock|secret-mount)=\S+`)
 
 func normalizeScript(s string) string {
 	var lines []string
 	for line := range strings.SplitSeq(s, "\n") {
 		line = strings.TrimRight(line, " \t\\")
-		line = retryLockFlag.ReplaceAllString(line, "")
+		line = ignoredFlags.ReplaceAllString(line, "")
 		// Only unquote exclude patterns; stripping a trailing quote from every
 		// line could hide a genuine difference elsewhere in the script.
 		if strings.Contains(line, "--exclude=") {

@@ -33,14 +33,20 @@ const (
 	DatabaseEngineMariaDB DatabaseEngine = "mariadb"
 )
 
-// Mount paths dumpdb reads credentials from. These are dumpdb's own defaults,
-// fixed per engine, and the operator does not pass --secret-mount, so the
-// Secret has to appear here whatever it is called.
+// DBSecretMountPath is where the operator mounts the database credentials
+// Secret.
+//
+// The operator passes this to dumpdb and restoredb as --secret-mount, so it is
+// the operator's own choice. Relying on their per-engine defaults instead would
+// make the path an unwritten contract between two repositories, breakable by a
+// change in either with no way for the other to notice.
+const DBSecretMountPath = "/var/run/secrets/borgbase/database"
+
+// Default names of the Secret holding database credentials, matching what the
+// hand-written backups this operator replaces already use.
 const (
-	// CNPGMountPath is where `dumpdb cnpg` looks for its credentials.
-	CNPGMountPath = "/postgresql-app"
-	// MariaDBMountPath is where `dumpdb mariadb` looks for its credentials.
-	MariaDBMountPath = "/mariadb"
+	defaultCNPGSecretName    = "postgresql-app"
+	defaultMariaDBSecretName = "mariadb"
 )
 
 // Condition types reported on a ScheduledBackup.
@@ -150,9 +156,8 @@ type DatabaseSpec struct {
 	// secretName is the Secret holding the credentials. Defaults to
 	// "postgresql-app" for cnpg and "mariadb" for mariadb.
 	//
-	// Whatever it is called, it is mounted at dumpdb's default path for the
-	// engine (/postgresql-app for cnpg, /mariadb for mariadb), because the
-	// operator does not pass --secret-mount.
+	// Whatever it is called, it is mounted at DBSecretMountPath, which the
+	// operator also passes to the dump and restore tools as --secret-mount.
 	// +optional
 	SecretName string `json:"secretName,omitempty"`
 
@@ -175,21 +180,17 @@ func (d *DatabaseSpec) EffectiveSecretName() string {
 		return d.SecretName
 	}
 	if d.Engine == DatabaseEngineMariaDB {
-		return MariaDBMountPath[1:]
+		return defaultMariaDBSecretName
 	}
-	return CNPGMountPath[1:]
+	return defaultCNPGSecretName
 }
 
-// MountPath returns where the credentials Secret must be mounted.
+// MountPath returns where the credentials Secret is mounted.
 //
-// This is dumpdb's own default for the engine, not a path derived from the
-// Secret name: dumpdb is invoked without --secret-mount, so mounting anywhere
-// else leaves the dump unable to find its credentials.
+// The same path is passed to the dump and restore tools, so it holds however
+// the Secret is named and whatever those tools default to.
 func (d *DatabaseSpec) MountPath() string {
-	if d.Engine == DatabaseEngineMariaDB {
-		return MariaDBMountPath
-	}
-	return CNPGMountPath
+	return DBSecretMountPath
 }
 
 // VolumeSpec attaches an existing PersistentVolumeClaim to back up files from.

@@ -92,9 +92,10 @@ the default wholesale.
 ### Database credentials
 
 `spec.database.secretName` chooses the Secret; it does not choose where the
-Secret is mounted. `dumpdb` is invoked without `--secret-mount`, so it reads a
-fixed path per engine, and the operator mounts there: `/postgresql-app` for
-cnpg and `/mariadb` for mariadb, whatever the Secret is called.
+Secret is mounted. The operator mounts it at one fixed path,
+`/var/run/secrets/borgbase/database`, and passes that same path to `dumpdb` and
+`restoredb` as `--secret-mount`, so where the credentials are put and where
+they are read from cannot drift apart.
 
 #### Schedules
 

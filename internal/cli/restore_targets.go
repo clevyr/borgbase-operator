@@ -334,8 +334,11 @@ func restoreToDatabase(
 	// The dump is stored in the snapshot under the host name, which the backup
 	// sets to the namespace, with an extension fixed by the engine.
 	dumpFile := sb.Namespace + dumpExtension(db.Engine)
-	pipeline := fmt.Sprintf("restic dump %s %s | restoredb %s",
-		shellQuote(o.snapshot), shellQuote(dumpFile), string(db.Engine))
+	// The same --secret-mount the backup passes to dumpdb, so restore reads the
+	// credentials from where the operator actually mounted them.
+	pipeline := fmt.Sprintf("restic dump %s %s | restoredb %s --secret-mount=%s",
+		shellQuote(o.snapshot), shellQuote(dumpFile), string(db.Engine),
+		borgbasev1.DBSecretMountPath)
 	if o.dryRun {
 		pipeline += " --dry-run"
 	}

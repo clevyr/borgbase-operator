@@ -1222,9 +1222,8 @@ spec:
                       secretName is the Secret holding the credentials. Defaults to
                       "postgresql-app" for cnpg and "mariadb" for mariadb.
 
-                      Whatever it is called, it is mounted at dumpdb's default path for the
-                      engine (/postgresql-app for cnpg, /mariadb for mariadb), because the
-                      operator does not pass --secret-mount.
+                      Whatever it is called, it is mounted at DBSecretMountPath, which the
+                      operator also passes to the dump and restore tools as --secret-mount.
                     type: string
                   user:
                     description: user sets DB_USERNAME. Required for mariadb, unused

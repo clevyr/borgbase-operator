@@ -91,8 +91,11 @@ func renderSource(src borgbasev1.BackupSource, retryLock string) (string, error)
 		// to disk first, so a dump never needs scratch space the size of the
 		// database.
 		var sb strings.Builder
-		fmt.Fprintf(&sb, "restic backup%s --tag=%s --stdin-from-command -- dumpdb %s",
-			retryLock, tag, src.Type)
+		// --secret-mount is passed explicitly rather than left to dumpdb's
+		// per-engine default, so where the operator mounts the Secret and where
+		// the dump looks for it cannot drift apart.
+		fmt.Fprintf(&sb, "restic backup%s --tag=%s --stdin-from-command -- dumpdb %s --secret-mount=%s",
+			retryLock, tag, src.Type, borgbasev1.DBSecretMountPath)
 		if src.Database != "" {
 			sb.WriteString(" --database=" + shellQuoteIfNeeded(src.Database))
 		}

@@ -435,10 +435,9 @@ func buildVolumes(sb *borgbasev1.ScheduledBackup) ([]corev1.Volume, []corev1.Vol
 			Name:   "db-credentials",
 			Secret: &corev1.SecretVolumeSource{SecretName: db.EffectiveSecretName()},
 		})
-		// Mounted where dumpdb looks, which is a fixed path per engine, not one
-		// derived from the Secret name. dumpdb is invoked without
-		// --secret-mount, so a custom secretName mounted at /<secretName> left
-		// the dump unable to find its credentials at all.
+		// One fixed path, not one derived from the Secret name: the rendered
+		// command passes this same path as --secret-mount, so a custom
+		// secretName cannot leave the dump looking somewhere else.
 		mounts = append(mounts, corev1.VolumeMount{
 			Name: "db-credentials", MountPath: db.MountPath(), ReadOnly: true,
 		})
