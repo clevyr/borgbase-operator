@@ -347,9 +347,11 @@ func TestDatabaseSecretMountsWhereDumpdbLooks(t *testing.T) {
 	}
 }
 
-// The default is the most locked-down context that still runs a backup, so a
-// namespace enforcing the restricted Pod Security Standard takes it as-is.
-func TestBackupPodIsLockedDownByDefault(t *testing.T) {
+// Capabilities and privilege escalation are locked down unconditionally, since
+// restic needs neither. What is deliberately absent matters as much: pinning a
+// user or group id would break reading the app's data, and an fsGroup would
+// chown it.
+func TestBackupPodSecurityDefaults(t *testing.T) {
 	cj, err := BuildCronJob(testBackup(nil), testRepo(), testConfig())
 	if err != nil {
 		t.Fatalf("BuildCronJob() error = %v", err)
@@ -362,16 +364,16 @@ func TestBackupPodIsLockedDownByDefault(t *testing.T) {
 	}
 
 	pod := spec.SecurityContext
-	if pod == nil || pod.RunAsNonRoot == nil || !*pod.RunAsNonRoot {
-		t.Errorf("pod securityContext = %+v, want runAsNonRoot", pod)
+	if pod == nil || pod.SeccompProfile == nil ||
+		pod.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("pod securityContext = %+v, want the RuntimeDefault seccomp profile", pod)
 	}
-	if pod.SeccompProfile == nil || pod.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
-		t.Errorf("seccompProfile = %+v, want RuntimeDefault", pod.SeccompProfile)
+	if pod.RunAsUser != nil || pod.RunAsGroup != nil || pod.RunAsNonRoot != nil {
+		t.Errorf("pod securityContext pins an id (%+v); the backup has to read data "+
+			"whose ownership varies per app", pod)
 	}
-	// fsGroup would chown the claim, and the backup often shares that claim
-	// with the app whose data it is reading.
 	if pod.FSGroup != nil {
-		t.Errorf("fsGroup = %v, want it left unset so backing up cannot chown the app's data", *pod.FSGroup)
+		t.Errorf("fsGroup = %v, want it unset so backing up cannot chown the app's data", *pod.FSGroup)
 	}
 
 	container := spec.Containers[0].SecurityContext
@@ -385,60 +387,9 @@ func TestBackupPodIsLockedDownByDefault(t *testing.T) {
 	if container.AllowPrivilegeEscalation == nil || *container.AllowPrivilegeEscalation {
 		t.Error("privilege escalation should be forbidden")
 	}
-	if container.ReadOnlyRootFilesystem == nil || !*container.ReadOnlyRootFilesystem {
-		t.Error("root filesystem should be read-only")
-	}
-}
-
-// A read-only root filesystem only works because restic and the dump tools get
-// somewhere else to write.
-func TestBackupPodHasWritableTmp(t *testing.T) {
-	cj, err := BuildCronJob(testBackup(nil), testRepo(), testConfig())
-	if err != nil {
-		t.Fatalf("BuildCronJob() error = %v", err)
-	}
-	spec := cj.Spec.JobTemplate.Spec.Template.Spec
-
-	var found bool
-	for _, v := range spec.Volumes {
-		if v.Name == tmpVolume {
-			found = true
-			if v.EmptyDir == nil {
-				t.Error("tmp should be an emptyDir")
-			}
-		}
-	}
-	if !found {
-		t.Fatal("no tmp volume, so a read-only root filesystem would break restic")
-	}
-
-	var mounted bool
-	for _, m := range spec.Containers[0].VolumeMounts {
-		if m.Name == tmpVolume && m.MountPath == tmpMountPath {
-			mounted = true
-		}
-	}
-	if !mounted {
-		t.Errorf("tmp is not mounted at %s", tmpMountPath)
-	}
-}
-
-// Without a cache volume restic falls back to a directory under $HOME, which
-// it cannot create when the root filesystem is read-only.
-func TestCacheDirFallsBackToTmpWhenCacheDisabled(t *testing.T) {
-	sb := testBackup(func(s *borgbasev1.ScheduledBackup) {
-		s.Spec.Cache = &borgbasev1.CacheSpec{Enabled: ptr.To(false)}
-	})
-	c := containerOf(t, sb, testConfig())
-
-	env := envOf(c, "RESTIC_CACHE_DIR")
-	if env == nil || env.Value != fallbackCacheDir {
-		t.Errorf("RESTIC_CACHE_DIR = %v, want %q", env, fallbackCacheDir)
-	}
-
-	// With the cache volume present the image's own setting is left alone.
-	if got := envOf(containerOf(t, testBackup(nil), testConfig()), "RESTIC_CACHE_DIR"); got != nil {
-		t.Errorf("RESTIC_CACHE_DIR = %v, want it left to the image when a cache volume is mounted", got)
+	// Opt-in: the image decides where it writes.
+	if container.ReadOnlyRootFilesystem != nil && *container.ReadOnlyRootFilesystem {
+		t.Error("read-only root filesystem should be opt-in, not the default")
 	}
 }
 
@@ -465,16 +416,17 @@ func TestPodSecurityContextOverride(t *testing.T) {
 	}
 }
 
-// An image that has to write outside /tmp needs the container context back.
+// Locking the container down further is opt-in.
 func TestContainerSecurityContextOverride(t *testing.T) {
 	sb := testBackup(func(s *borgbasev1.ScheduledBackup) {
 		s.Spec.ContainerSecurityContext = &corev1.SecurityContext{
-			ReadOnlyRootFilesystem: ptr.To(false),
+			ReadOnlyRootFilesystem: ptr.To(true),
+			Capabilities:           &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		}
 	})
 	c := containerOf(t, sb, testConfig())
 	if c.SecurityContext == nil || c.SecurityContext.ReadOnlyRootFilesystem == nil ||
-		*c.SecurityContext.ReadOnlyRootFilesystem {
+		!*c.SecurityContext.ReadOnlyRootFilesystem {
 		t.Errorf("securityContext = %+v, want the override applied", c.SecurityContext)
 	}
 }

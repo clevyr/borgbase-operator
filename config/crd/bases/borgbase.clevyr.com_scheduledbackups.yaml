@@ -1008,12 +1008,11 @@ spec:
               containerSecurityContext:
                 description: |-
                   containerSecurityContext replaces the backup container's security
-                  context. The default drops every capability, forbids privilege
-                  escalation and mounts the root filesystem read-only.
+                  context. The default drops every capability and forbids privilege
+                  escalation, which restic never needs.
 
-                  The container gets a writable /tmp regardless, so read-only root is safe
-                  for restic and the dump tools; this exists for an image that needs to
-                  write somewhere else.
+                  Set it to add readOnlyRootFilesystem, which is left off by default
+                  because where the image and the dump tools write is their business.
                 properties:
                   allowPrivilegeEscalation:
                     description: |-
@@ -1354,13 +1353,14 @@ spec:
               podSecurityContext:
                 description: |-
                   podSecurityContext replaces the backup pod's security context, which by
-                  default is the most restrictive one that still runs: runAsNonRoot with
-                  the RuntimeDefault seccomp profile.
+                  default sets only the RuntimeDefault seccomp profile.
 
-                  Set it when the data being backed up is owned by a specific user, since
-                  the operator cannot know what owns it. A files backup of root-owned data
-                  needs a runAsUser or fsGroup that can read it. Replacing the default
-                  replaces it wholesale, so repeat anything you still want.
+                  No user or group id is imposed by default, because the backup has to read
+                  the app's data and its ownership varies per app and per cluster; an
+                  fsGroup would also chown that data as a side effect. Set this to run as a
+                  particular user, or to satisfy a namespace enforcing the restricted Pod
+                  Security Standard. It replaces the default wholesale, so repeat anything
+                  you still want.
                 properties:
                   appArmorProfile:
                     description: |-
