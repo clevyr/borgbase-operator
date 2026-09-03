@@ -134,7 +134,7 @@ one-hour grace. Adopting an existing check preserves its tuned values: set its
 | --- | --- | --- |
 | `--api-token-secret` | `borgbase-api` | Default BorgBase API token. A bare name resolves in the operator's own namespace, taken from `POD_NAMESPACE` |
 | `--api-token-key` | `token` | Key within that Secret |
-| `--backup-image` | `ghcr.io/clevyr/restic:0.18.1` | Must provide restic, runitor, ts, dumpdb |
+| `--backup-image` | `ghcr.io/clevyr/restic:0.18.1` | Must provide restic, runitor, ts, dumpdb. `corg restore --to-database` additionally needs restoredb, which it probes for |
 | `--cache-storage-class` | *(none)* | StorageClass for restic cache volumes |
 | `--healthchecks-enabled` | `true` | Report runs via runitor |
 | `--healthchecks-api-url` | `http://healthchecks.healthchecks:8000/ping` | Ping endpoint |
@@ -219,11 +219,24 @@ never fires is invisible. `make test-crd` runs them against a real API server.
 Releases publish a container image to `ghcr.io/clevyr/borgbase-operator` and
 the rendered manifests as an OCI artifact at
 `ghcr.io/clevyr/borgbase-operator-manifests`, which Flux consumes via an
-`OCIRepository`.
+`OCIRepository`. The same tag builds `corg` from `.goreleaser.yml`: archives and
+checksums are attached to the GitHub release, and the Homebrew cask is committed
+to `clevyr/homebrew-tap`.
 
 ## corg, the CLI
 
 `corg` runs backups on demand, explains why one is not running, and restores
-snapshots. It is the same binary as the `kubectl corg` plugin.
+snapshots. It is the same binary as the `kubectl corg` plugin: the cask installs
+it under both names, and kubectl presents anything called `kubectl-corg` on PATH
+as a subcommand of its own.
+
+```sh
+brew install clevyr/tap/corg
+corg doctor -n myapp-prod        # or: kubectl corg doctor -n myapp-prod
+```
+
+`corg` talks to the cluster as you do, and needs more than the operator's own
+ServiceAccount holds: `config/rbac/corg_user_role.yaml` defines `corg-viewer`
+for read-only use and `corg-operator` for triggering backups and restoring.
 
 See [docs/corg.md](docs/corg.md) for the full command reference.
