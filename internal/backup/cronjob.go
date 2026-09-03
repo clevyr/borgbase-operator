@@ -59,6 +59,9 @@ type Config struct {
 // CacheName returns the name of the restic cache PVC for a backup.
 func CacheName(sb *borgbasev1.ScheduledBackup) string { return sb.Name + "-cache" }
 
+// CronJobName returns the name of the CronJob for a backup.
+func CronJobName(sb *borgbasev1.ScheduledBackup) string { return sb.Name + "-backup" }
+
 // cacheEnabled reports whether the cache volume should be created.
 func cacheEnabled(sb *borgbasev1.ScheduledBackup) bool {
 	if sb.Spec.Cache == nil || sb.Spec.Cache.Enabled == nil {
@@ -167,7 +170,7 @@ func BuildCronJob(
 	}
 
 	return &batchv1.CronJob{
-		Name:      sb.Name,
+		Name:      CronJobName(sb),
 		Namespace: sb.Namespace,
 		Labels:    commonLabels(sb),
 		Spec: batchv1.CronJobSpec{

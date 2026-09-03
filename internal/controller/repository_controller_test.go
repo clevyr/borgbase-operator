@@ -172,11 +172,11 @@ func TestAdoptionNeverCreates(t *testing.T) {
 // decrypt anything already in it.
 func TestRefusesToInventPasswordForNonEmptyRepository(t *testing.T) {
 	api := newFakeAPI(&borgbase.Repo{
-		ID: "abc12345", Name: testNS, Format: borgbase.FormatRestic,
+		ID: testRepoID, Name: testNS, Format: borgbase.FormatRestic,
 		Htpasswd: "t", CurrentUsage: 12.5,
 	})
 	repo := repositoryFixture(func(r *borgbasev1.Repository) {
-		r.Status.RepositoryID = "abc12345"
+		r.Status.RepositoryID = testRepoID
 	})
 
 	r, _ := newHarness(t, api, repo)
