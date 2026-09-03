@@ -1,0 +1,66 @@
+version: 2
+
+project_name: corg
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: corg
+    main: ./cmd/kubectl-corg
+    binary: corg
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/clevyr/borgbase-operator/internal/cli.version={{ .Version }}
+
+archives:
+  - id: corg
+    ids: [corg]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats: [tar.gz]
+    files:
+      - LICENSE*
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore\\(deps\\):"
+
+brews:
+  - name: corg
+    ids: [corg]
+    repository:
+      owner: clevyr
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: https://github.com/clevyr/borgbase-operator
+    description: Companion CLI for the Clevyr borgbase operator
+    license: MIT
+    install: |
+      bin.install "corg"
+      # The same binary serves as a kubectl plugin; kubectl finds it on PATH
+      # by this name and presents it as `kubectl corg`.
+      bin.install_symlink bin/"corg" => "kubectl-corg"
+    test: |
+      system "#{bin}/corg", "version"
+
+release:
+  # The operator and the CLI are versioned together out of one repository, so
+  # a CLI release rides the same tag.
+  prerelease: auto

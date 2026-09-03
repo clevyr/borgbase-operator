@@ -1,0 +1,52 @@
+# krew manifest for the corg plugin.
+#
+# Submit to https://github.com/kubernetes-sigs/krew-index once the command
+# surface has settled. Until then this can be installed directly:
+#
+#   kubectl krew install --manifest=plugins/corg.yaml
+apiVersion: krew.googlecontainertools.github.com/v1alpha2
+kind: Plugin
+metadata:
+  name: corg
+spec:
+  version: v0.0.0
+  homepage: https://github.com/clevyr/borgbase-operator
+  shortDescription: Operate borgbase-operator backups
+  description: |
+    corg drives the backups that borgbase-operator schedules.
+
+    It runs a backup on demand, explains why one is not running, browses and
+    restores snapshots, and opens a shell with restic already configured.
+  caveats: |
+    Needs permission to read the backup credentials Secret and to create Jobs.
+    Apply config/rbac/corg_user_role.yaml and bind corg-operator, or
+    corg-viewer for read-only access.
+  platforms:
+    - selector:
+        matchLabels:
+          os: linux
+          arch: amd64
+      uri: https://github.com/clevyr/borgbase-operator/releases/download/v0.0.0/corg_0.0.0_linux_amd64.tar.gz
+      sha256: ""
+      bin: corg
+    - selector:
+        matchLabels:
+          os: linux
+          arch: arm64
+      uri: https://github.com/clevyr/borgbase-operator/releases/download/v0.0.0/corg_0.0.0_linux_arm64.tar.gz
+      sha256: ""
+      bin: corg
+    - selector:
+        matchLabels:
+          os: darwin
+          arch: amd64
+      uri: https://github.com/clevyr/borgbase-operator/releases/download/v0.0.0/corg_0.0.0_darwin_amd64.tar.gz
+      sha256: ""
+      bin: corg
+    - selector:
+        matchLabels:
+          os: darwin
+          arch: arm64
+      uri: https://github.com/clevyr/borgbase-operator/releases/download/v0.0.0/corg_0.0.0_darwin_arm64.tar.gz
+      sha256: ""
+      bin: corg
