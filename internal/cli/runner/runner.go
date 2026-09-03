@@ -26,6 +26,7 @@ import (
 
 	borgbasev1 "github.com/clevyr/borgbase-operator/api/v1"
 	"github.com/clevyr/borgbase-operator/internal/backup"
+	"github.com/clevyr/borgbase-operator/internal/cli/kube"
 )
 
 const (
@@ -86,6 +87,11 @@ type Options struct {
 
 	// Keep leaves the Job behind for inspection.
 	Keep bool
+
+	// ExtraVolumes and ExtraMounts attach scratch space, such as the claim a
+	// restore is staged into.
+	ExtraVolumes []corev1.Volume
+	ExtraMounts  []corev1.VolumeMount
 }
 
 // idleCommand keeps an interactive pod alive while the caller execs into it.
@@ -139,6 +145,9 @@ func (r *Runner) Build(
 	} else {
 		dropData(&spec.Template.Spec, container)
 	}
+
+	spec.Template.Spec.Volumes = append(spec.Template.Spec.Volumes, opts.ExtraVolumes...)
+	container.VolumeMounts = append(container.VolumeMounts, opts.ExtraMounts...)
 
 	labels := map[string]string{labelManagedBy: ManagedByValue}
 	// MariaDB network policies select clients by this label, so a restore that
@@ -399,3 +408,18 @@ func (r *Runner) Attach(
 
 // ContainerName is the container an interactive session should attach to.
 const ContainerName = containerName
+
+// Exec runs a command inside an already-attached pod.
+//
+// Unlike Run it does not go through pod logs, so the command's stdout arrives
+// byte for byte. That matters for anything binary, such as a tar stream.
+func (r *Runner) Exec(ctx context.Context, pod *corev1.Pod, opts kube.ExecOptions) error {
+	opts.Namespace = pod.Namespace
+	opts.Pod = pod.Name
+	if opts.Container == "" {
+		opts.Container = containerName
+	}
+	// A dump or a tar is long and open-ended; keepalives truncate it.
+	opts.DisablePing = true
+	return kube.Exec(ctx, r.RESTConfig, r.Clientset, opts)
+}

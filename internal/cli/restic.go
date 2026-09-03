@@ -14,7 +14,12 @@ import (
 
 // defaultResticTimeout bounds an ephemeral run. A check or a prune over a large
 // repository is slow, so this is generous.
-const defaultResticTimeout = time.Hour
+const (
+	defaultResticTimeout = time.Hour
+
+	// cleanupTimeout bounds the detached work that undoes a cancelled restore.
+	cleanupTimeout = 30 * time.Second
+)
 
 var ErrNoBackupForRepository = errors.New("no ScheduledBackup uses this repository")
 

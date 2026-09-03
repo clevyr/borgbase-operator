@@ -21,6 +21,7 @@ const (
 	testCronJobUID = "uid-cronjob"
 	reasonReady    = "Ready"
 	statusTrue     = "True"
+	testClaimName  = "app-data"
 	subjectRepo    = "repository/" + testRepoName
 	subjectBackup  = "scheduledbackup/" + testBackupName
 )
