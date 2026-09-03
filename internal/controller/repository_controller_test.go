@@ -566,9 +566,11 @@ func TestSettingsDriftIsCorrected(t *testing.T) {
 	if edit.AppendOnly == nil || !*edit.AppendOnly {
 		t.Errorf("appendOnly = %v, want true", edit.AppendOnly)
 	}
-	// quotaEnabled already matched, so it must not be sent again.
-	if edit.QuotaEnabled != nil {
-		t.Errorf("quotaEnabled = %v, want it left alone", *edit.QuotaEnabled)
+	// quotaEnabled rides along even though it already matched: BorgBase rejects
+	// an edit naming one of the pair without the other, and repeating a value
+	// that is already correct changes nothing.
+	if edit.QuotaEnabled == nil || !*edit.QuotaEnabled {
+		t.Errorf("quotaEnabled = %v, want it sent alongside the quota", edit.QuotaEnabled)
 	}
 }
 
@@ -690,4 +692,94 @@ func TestLookupFailureLeavesStateIntact(t *testing.T) {
 	if after := string(getSecret(t, c, "restic-borgbase").Data[KeyResticPassword]); after != before {
 		t.Error("the password was rewritten during an API outage")
 	}
+}
+
+// BorgBase rejects an edit that names one of quota and quotaEnabled without the
+// other. Adopting a repository that has a quota, with a spec that asks for
+// none, used to send quotaEnabled alone and fail the whole reconcile.
+func TestQuotaAndQuotaEnabledAreAlwaysSentTogether(t *testing.T) {
+	tests := []struct {
+		name          string
+		specQuota     *int32
+		remoteEnabled bool
+		remoteQuota   int64
+		wantEnabled   *bool
+		wantQuota     *int64
+	}{
+		{
+			name:      "clearing a quota still carries a value",
+			specQuota: nil, remoteEnabled: true, remoteQuota: 5,
+			wantEnabled: ptr.To(false), wantQuota: ptr.To(int64(5)),
+		},
+		{
+			name:      "setting a quota sends both",
+			specQuota: ptr.To(int32(10)), remoteEnabled: false,
+			wantEnabled: ptr.To(true), wantQuota: ptr.To(int64(10)),
+		},
+		{
+			name:      "changing a quota sends both",
+			specQuota: ptr.To(int32(20)), remoteEnabled: true, remoteQuota: 10,
+			wantEnabled: ptr.To(true), wantQuota: ptr.To(int64(20)),
+		},
+		{
+			name:      "an unchanged quota sends neither",
+			specQuota: ptr.To(int32(10)), remoteEnabled: true, remoteQuota: 10,
+		},
+		{
+			name:      "no quota either side sends neither",
+			specQuota: nil, remoteEnabled: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &borgbasev1.Repository{
+				Name: resticName, Namespace: testNS,
+				Spec: borgbasev1.RepositorySpec{QuotaGiB: tt.specQuota},
+			}
+			remote := &borgbase.Repo{QuotaEnabled: tt.remoteEnabled, Quota: tt.remoteQuota}
+
+			remote.ID = testRepoID
+			api := newFakeAPI(remote)
+			r, _ := newHarness(t, api, repo)
+			if _, err := r.reconcileSettings(context.Background(), repo, remote, api); err != nil {
+				t.Fatalf("reconcileSettings: %v", err)
+			}
+
+			opts := api.lastEdit()
+			if !equalBoolPtr(opts.QuotaEnabled, tt.wantEnabled) {
+				t.Errorf("quotaEnabled = %v, want %v", derefBool(opts.QuotaEnabled), derefBool(tt.wantEnabled))
+			}
+			if !equalInt64Ptr(opts.Quota, tt.wantQuota) {
+				t.Errorf("quota = %v, want %v", derefInt64(opts.Quota), derefInt64(tt.wantQuota))
+			}
+			// Neither may ever travel without the other.
+			if (opts.QuotaEnabled == nil) != (opts.Quota == nil) {
+				t.Errorf("quota and quotaEnabled must be sent together, got quota=%v enabled=%v",
+					derefInt64(opts.Quota), derefBool(opts.QuotaEnabled))
+			}
+		})
+	}
+}
+
+func equalBoolPtr(a, b *bool) bool {
+	return (a == nil) == (b == nil) && (a == nil || *a == *b)
+}
+
+func equalInt64Ptr(a, b *int64) bool {
+	return (a == nil) == (b == nil) && (a == nil || *a == *b)
+}
+
+func derefBool(p *bool) any {
+	if p == nil {
+		return "<unset>"
+	}
+	return *p
+}
+
+func derefInt64(p *int64) any {
+	if p == nil {
+		return "<unset>"
+	}
+	return *p
 }

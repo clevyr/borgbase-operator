@@ -336,16 +336,19 @@ func (r *RepositoryReconciler) reconcileSettings(
 ) (*borgbase.Repo, error) {
 	var opts borgbase.EditOptions
 
-	wantQuota := repo.Spec.QuotaGiB != nil
-	if wantQuota != remote.QuotaEnabled {
-		opts.QuotaEnabled = ptr.To(wantQuota)
-	}
-	if wantQuota {
-		// Send the value alongside whenever the quota is being switched on, so
-		// the repository is never left enabled with a stale limit.
-		if q := int64(*repo.Spec.QuotaGiB); q != remote.Quota || opts.QuotaEnabled != nil {
+	// BorgBase rejects an edit naming one of quota and quotaEnabled without the
+	// other, so they are always sent as a pair. Turning a quota off still has
+	// to carry a value, which is why disabling repeats the current one.
+	switch {
+	case repo.Spec.QuotaGiB != nil:
+		q := int64(*repo.Spec.QuotaGiB)
+		if !remote.QuotaEnabled || q != remote.Quota {
+			opts.QuotaEnabled = ptr.To(true)
 			opts.Quota = ptr.To(q)
 		}
+	case remote.QuotaEnabled:
+		opts.QuotaEnabled = ptr.To(false)
+		opts.Quota = ptr.To(remote.Quota)
 	}
 	if days := int64Ptr(repo.Spec.AlertDays); days != nil && *days != remote.AlertDays {
 		opts.AlertDays = days
