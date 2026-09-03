@@ -2,12 +2,19 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -87,5 +94,325 @@ func TestUpdatesItsOwnCronJob(t *testing.T) {
 	}
 	if cj.Spec.Schedule != want {
 		t.Errorf("drift was not corrected: schedule = %q, want %q", cj.Spec.Schedule, want)
+	}
+}
+
+// A backup whose repository does not exist must say so and schedule nothing:
+// the run would fail, and on a fresh repository it could initialize it with
+// the wrong password.
+func TestRepositoryNotFoundSetsCondition(t *testing.T) {
+	r, c := backupHarness(t, scheduledBackup())
+	reconcileBackup(t, r)
+
+	if cond := readyCondition(t, c); cond == nil || cond.Reason != "RepositoryNotFound" {
+		t.Errorf("Ready condition = %+v, want reason RepositoryNotFound", cond)
+	}
+	assertNoCronJob(t, c)
+}
+
+func TestRepositoryNotInitializedSetsCondition(t *testing.T) {
+	repo := initializedRepo()
+	repo.Status.Initialized = false
+	r, c := backupHarness(t, repo, scheduledBackup())
+	reconcileBackup(t, r)
+
+	if cond := readyCondition(t, c); cond == nil || cond.Reason != "RepositoryNotReady" {
+		t.Errorf("Ready condition = %+v, want reason RepositoryNotReady", cond)
+	}
+	assertNoCronJob(t, c)
+}
+
+// The cache is what keeps `restic forget --prune` affordable.
+func TestCreatesCacheVolume(t *testing.T) {
+	r, c := backupHarness(t, initializedRepo(), scheduledBackup())
+	reconcileBackup(t, r)
+
+	var pvc corev1.PersistentVolumeClaim
+	key := types.NamespacedName{Namespace: testNS, Name: resticName + "-cache"}
+	if err := c.Get(context.Background(), key, &pvc); err != nil {
+		t.Fatalf("expected a cache volume: %v", err)
+	}
+	if owner := metav1.GetControllerOf(&pvc); owner == nil || owner.Name != resticName {
+		t.Errorf("cache volume owner = %+v, want the ScheduledBackup", owner)
+	}
+}
+
+// Turning the cache off should reclaim the volume rather than leaving a claim
+// nothing will ever mount again.
+func TestDisablingCacheDeletesTheVolume(t *testing.T) {
+	r, c := backupHarness(t, initializedRepo(), scheduledBackup())
+	reconcileBackup(t, r)
+
+	key := types.NamespacedName{Namespace: testNS, Name: resticName + "-cache"}
+	var pvc corev1.PersistentVolumeClaim
+	if err := c.Get(context.Background(), key, &pvc); err != nil {
+		t.Fatalf("expected a cache volume: %v", err)
+	}
+
+	var sb borgbasev1.ScheduledBackup
+	sbKey := types.NamespacedName{Namespace: testNS, Name: resticName}
+	if err := c.Get(context.Background(), sbKey, &sb); err != nil {
+		t.Fatal(err)
+	}
+	sb.Spec.Cache = &borgbasev1.CacheSpec{Enabled: ptr.To(false)}
+	if err := c.Update(context.Background(), &sb); err != nil {
+		t.Fatal(err)
+	}
+	reconcileBackup(t, r)
+
+	if err := c.Get(context.Background(), key, &pvc); !apierrors.IsNotFound(err) {
+		t.Errorf("cache volume survived being disabled: %v", err)
+	}
+}
+
+// A cache claim the operator did not create is somebody else's, even if the
+// name happens to match.
+func TestDisablingCacheLeavesForeignClaimAlone(t *testing.T) {
+	foreign := &corev1.PersistentVolumeClaim{
+		Name: resticName + "-cache", Namespace: testNS,
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+			},
+		},
+	}
+	sb := scheduledBackup()
+	sb.Spec.Cache = &borgbasev1.CacheSpec{Enabled: ptr.To(false)}
+
+	r, c := backupHarness(t, initializedRepo(), sb, foreign)
+	reconcileBackup(t, r)
+
+	key := types.NamespacedName{Namespace: testNS, Name: resticName + "-cache"}
+	if err := c.Get(context.Background(), key, &corev1.PersistentVolumeClaim{}); err != nil {
+		t.Errorf("an unowned claim was deleted: %v", err)
+	}
+}
+
+// The CronJob holds the run history, so the ScheduledBackup mirrors it rather
+// than making the reader look in two places.
+func TestCopiesCronJobStatusTimes(t *testing.T) {
+	r, c := backupHarness(t, initializedRepo(), scheduledBackup())
+	reconcileBackup(t, r)
+
+	cjKey := types.NamespacedName{Namespace: testNS, Name: cronJobName}
+	var cj batchv1.CronJob
+	if err := c.Get(context.Background(), cjKey, &cj); err != nil {
+		t.Fatal(err)
+	}
+	scheduled := metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
+	succeeded := metav1.NewTime(time.Now().Add(-30 * time.Minute).Truncate(time.Second))
+	cj.Status.LastScheduleTime = &scheduled
+	cj.Status.LastSuccessfulTime = &succeeded
+	cj.Status.Active = []corev1.ObjectReference{{Name: "run-1"}}
+	if err := c.Status().Update(context.Background(), &cj); err != nil {
+		t.Fatal(err)
+	}
+	reconcileBackup(t, r)
+
+	var sb borgbasev1.ScheduledBackup
+	if err := c.Get(context.Background(),
+		types.NamespacedName{Namespace: testNS, Name: resticName}, &sb); err != nil {
+		t.Fatal(err)
+	}
+	if sb.Status.LastSuccessfulTime == nil || !sb.Status.LastSuccessfulTime.Equal(&succeeded) {
+		t.Errorf("lastSuccessfulTime = %v, want %v", sb.Status.LastSuccessfulTime, succeeded)
+	}
+	if sb.Status.Active != 1 {
+		t.Errorf("active = %d, want 1", sb.Status.Active)
+	}
+}
+
+// Sharing a healthchecks check would let one backup's success mask the other's
+// failure. The older backup keeps reporting; the newcomer is held back.
+func TestSlugConflictBlocksTheNewerBackup(t *testing.T) {
+	pingKey := &corev1.SecretKeySelector{
+		Name: "healthchecks-ping-key", Key: "PING_KEY",
+	}
+	incumbent := scheduledBackup()
+	incumbent.Name = "restic-old"
+	incumbent.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
+	incumbent.Spec.Healthchecks = &borgbasev1.HealthchecksSpec{PingKeySecretRef: pingKey}
+
+	newcomer := scheduledBackup()
+	newcomer.Name = "restic-new"
+	newcomer.CreationTimestamp = metav1.NewTime(time.Now())
+	newcomer.Spec.Healthchecks = &borgbasev1.HealthchecksSpec{PingKeySecretRef: pingKey}
+
+	r, c := backupHarness(t, initializedRepo(), incumbent, newcomer)
+	r.Config.Healthchecks = healthchecks.Config{
+		Enabled: true, APIURL: "http://healthchecks:8000/ping", AutoCreate: true,
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: testNS, Name: "restic-new"},
+	}); err != nil {
+		t.Fatalf("reconciling the newcomer: %v", err)
+	}
+	var got borgbasev1.ScheduledBackup
+	if err := c.Get(context.Background(),
+		types.NamespacedName{Namespace: testNS, Name: "restic-new"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	cond := apimeta.FindStatusCondition(got.Status.Conditions, borgbasev1.ScheduledBackupConditionReady)
+	if cond == nil || cond.Reason != "SlugConflict" {
+		t.Fatalf("newcomer Ready = %+v, want reason SlugConflict", cond)
+	}
+	if err := c.Get(context.Background(),
+		types.NamespacedName{Namespace: testNS, Name: "restic-new-backup"},
+		&batchv1.CronJob{}); !apierrors.IsNotFound(err) {
+		t.Error("the conflicting backup was scheduled anyway")
+	}
+
+	// The incumbent is unaffected.
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: testNS, Name: "restic-old"},
+	}); err != nil {
+		t.Fatalf("reconciling the incumbent: %v", err)
+	}
+	if err := c.Get(context.Background(),
+		types.NamespacedName{Namespace: testNS, Name: "restic-old-backup"},
+		&batchv1.CronJob{}); err != nil {
+		t.Errorf("the older backup should still be scheduled: %v", err)
+	}
+}
+
+// Distinct slugs are the fix, so they must actually clear the conflict.
+func TestDistinctSlugsCoexist(t *testing.T) {
+	pingKey := &corev1.SecretKeySelector{Name: "healthchecks-ping-key", Key: "PING_KEY"}
+	first := scheduledBackup()
+	first.Name = "restic-files"
+	first.Spec.Healthchecks = &borgbasev1.HealthchecksSpec{
+		PingKeySecretRef: pingKey, Slug: "myapp-files",
+	}
+	second := scheduledBackup()
+	second.Name = "restic-db"
+	second.Spec.Healthchecks = &borgbasev1.HealthchecksSpec{
+		PingKeySecretRef: pingKey, Slug: "myapp-db",
+	}
+
+	r, c := backupHarness(t, initializedRepo(), first, second)
+	r.Config.Healthchecks = healthchecks.Config{
+		Enabled: true, APIURL: "http://healthchecks:8000/ping", AutoCreate: true,
+	}
+
+	for _, name := range []string{"restic-files", "restic-db"} {
+		if _, err := r.Reconcile(context.Background(), ctrl.Request{
+			NamespacedName: types.NamespacedName{Namespace: testNS, Name: name},
+		}); err != nil {
+			t.Fatalf("reconciling %s: %v", name, err)
+		}
+		if err := c.Get(context.Background(),
+			types.NamespacedName{Namespace: testNS, Name: name + "-backup"},
+			&batchv1.CronJob{}); err != nil {
+			t.Errorf("%s was not scheduled: %v", name, err)
+		}
+	}
+}
+
+// A repository becoming ready has to unblock the backups waiting on it, which
+// is what the field index is for.
+func TestBackupsForRepositoryUsesTheIndex(t *testing.T) {
+	mine := scheduledBackup()
+	other := scheduledBackup()
+	other.Name = "unrelated"
+	other.Spec.RepositoryRef = corev1.LocalObjectReference{Name: "different-repo"}
+
+	scheme := testScheme(t)
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(mine, other).
+		WithIndex(&borgbasev1.ScheduledBackup{}, repositoryRefField,
+			func(o client.Object) []string {
+				sb, ok := o.(*borgbasev1.ScheduledBackup)
+				if !ok || sb.Spec.RepositoryRef.Name == "" {
+					return nil
+				}
+				return []string{sb.Spec.RepositoryRef.Name}
+			}).
+		Build()
+	r := &ScheduledBackupReconciler{Client: c, Scheme: scheme}
+
+	got := r.backupsForRepository(context.Background(), initializedRepo())
+	if len(got) != 1 || got[0].Name != resticName {
+		t.Errorf("backupsForRepository() = %v, want just %s", got, resticName)
+	}
+}
+
+// The cache only holds CronJobs this operator labelled, so a name taken by
+// something else looks absent until the create fails.
+func TestUnmanagedCronJobIsReported(t *testing.T) {
+	foreign := &batchv1.CronJob{
+		Name: cronJobName, Namespace: testNS,
+		Spec: batchv1.CronJobSpec{
+			Schedule: "0 0 * * *",
+			JobTemplate: batchv1.JobTemplateSpec{
+				Spec: batchv1.JobSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							RestartPolicy: corev1.RestartPolicyNever,
+							Containers:    []corev1.Container{{Name: "c", Image: "busybox"}},
+						},
+					},
+				},
+			},
+		},
+	}
+	r, _ := backupHarness(t, initializedRepo(), scheduledBackup())
+	// Create it behind the reconciler's back, as an unlabelled object outside
+	// the cache would be.
+	if err := r.Create(context.Background(), foreign); err != nil {
+		t.Fatal(err)
+	}
+
+	r.Client = &createConflictClient{Client: r.Client}
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: testNS, Name: resticName},
+	})
+	if err == nil || !strings.Contains(err.Error(), "not managed by this operator") {
+		t.Errorf("error = %v, want it to name the unmanaged CronJob", err)
+	}
+}
+
+// createConflictClient hides existing CronJobs from Get, the way a filtered
+// informer cache does, so Create is the first thing to notice the collision.
+type createConflictClient struct {
+	client.Client
+}
+
+func (c *createConflictClient) Get(
+	ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption,
+) error {
+	if _, ok := obj.(*batchv1.CronJob); ok {
+		return apierrors.NewNotFound(batchv1.Resource("cronjobs"), key.Name)
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+func reconcileBackup(t *testing.T, r *ScheduledBackupReconciler) {
+	t.Helper()
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: testNS, Name: resticName},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+}
+
+func readyCondition(t *testing.T, c client.Client) *metav1.Condition {
+	t.Helper()
+	var sb borgbasev1.ScheduledBackup
+	if err := c.Get(context.Background(),
+		types.NamespacedName{Namespace: testNS, Name: resticName}, &sb); err != nil {
+		t.Fatal(err)
+	}
+	return apimeta.FindStatusCondition(sb.Status.Conditions, borgbasev1.ScheduledBackupConditionReady)
+}
+
+func assertNoCronJob(t *testing.T, c client.Client) {
+	t.Helper()
+	err := c.Get(context.Background(),
+		types.NamespacedName{Namespace: testNS, Name: cronJobName}, &batchv1.CronJob{})
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("a CronJob was created despite the repository not being usable: %v", err)
 	}
 }

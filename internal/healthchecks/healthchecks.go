@@ -93,9 +93,11 @@ func (r Reporter) Enabled() bool { return r.enabled }
 // Slug returns the check slug this job reports to.
 func (r Reporter) Slug() string { return r.slug }
 
-// byUUID reports whether this job pings a check by UUID rather than by slug.
-// That is the adoption path for a check that cannot be given a slug.
-func (r Reporter) byUUID() bool { return r.uuidRef != nil }
+// PingsByUUID reports whether this job pings a check by UUID rather than by
+// slug. That is the adoption path for a check that cannot be given a slug, and
+// it is exported because a UUID ping is addressed to one specific check, so it
+// cannot collide with another backup's slug.
+func (r Reporter) PingsByUUID() bool { return r.uuidRef != nil }
 
 // Wrap returns cmd wrapped in runitor, so that healthchecks sees a start ping,
 // the exit status, and the captured output. A disabled Reporter returns cmd
@@ -107,7 +109,7 @@ func (r Reporter) Wrap(cmd []string) []string {
 	out := []string{"runitor"}
 	// -create only means anything for slug pings. runitor reads the slug and
 	// ping key from the environment, so no other flag is needed.
-	if r.create && !r.byUUID() {
+	if r.create && !r.PingsByUUID() {
 		out = append(out, "-create")
 	}
 	out = append(out, "--")
@@ -125,7 +127,7 @@ func (r Reporter) Env() ([]corev1.EnvVar, error) {
 
 	env := []corev1.EnvVar{{Name: EnvAPIURL, Value: r.apiURL}}
 
-	if r.byUUID() {
+	if r.PingsByUUID() {
 		return append(env, corev1.EnvVar{
 			Name:      EnvUUID,
 			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: r.uuidRef},

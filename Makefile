@@ -60,8 +60,18 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: manifests generate fmt vet setup-envtest ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+test: manifests generate fmt vet ## Run unit tests. No cluster or envtest binaries needed.
+	go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+
+# The CRD validation lives in CEL rules, which nothing in the Go tests can
+# exercise: a rule that fails to compile makes every CRD install fail, and one
+# that never fires is invisible. These run the real API server against the
+# generated CRDs. Kept behind a build tag so `make test` stays fast and needs
+# nothing downloaded.
+.PHONY: test-crd
+test-crd: manifests generate setup-envtest ## Run CRD validation tests against a real API server.
+	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" \
+		go test -tags envtest ./internal/controller/ -run TestCRD -count=1
 
 KIND_CLUSTER ?= borgbase-operator-test-e2e
 

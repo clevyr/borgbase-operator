@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -41,8 +42,8 @@ func TestResolveScheduleShorthands(t *testing.T) {
 		{"@daily", `^\d+ \d+ \* \* \*$`},
 		{"@weekly", `^\d+ \d+ \* \* \d$`},
 		{"@monthly", `^\d+ \d+ \d+ \* \*$`},
-		{"@every 6h", `^\d+ \*/6 \* \* \*$`},
-		{"@every 15m", `^\*/15 \* \* \* \*$`},
+		{"@every 6h", `^\d+ \d-23/6 \* \* \*$`},
+		{"@every 15m", `^\d+-59/15 \* \* \* \*$`},
 		{"@every 1h", `^\d+ \* \* \* \*$`},
 	}
 	for _, tt := range tests {
@@ -118,5 +119,83 @@ func TestJitterIsStableAndDistributed(t *testing.T) {
 	if len(minutes) < 20 {
 		t.Errorf("%d namespaces landed on only %d distinct minutes, want at least 20",
 			len(namespaces), len(minutes))
+	}
+}
+
+// "@every 24h" and "@daily" mean the same thing, so they must resolve to the
+// same time. The hour used to be hashed from the minute, which both collapsed
+// a day's worth of slots into sixty and gave one resource two different
+// schedules depending on how it spelled the same cadence.
+func TestEveryDayMatchesDaily(t *testing.T) {
+	for _, key := range []string{"myapp-prod/restic", "other-prod/restic", "third-staging/restic"} {
+		daily, err := ResolveSchedule("@daily", key)
+		if err != nil {
+			t.Fatalf("ResolveSchedule(@daily, %q) error = %v", key, err)
+		}
+		every, err := ResolveSchedule("@every 24h", key)
+		if err != nil {
+			t.Fatalf("ResolveSchedule(@every 24h, %q) error = %v", key, err)
+		}
+		if daily != every {
+			t.Errorf("%q: @daily = %q but @every 24h = %q", key, daily, every)
+		}
+	}
+}
+
+// A stepped schedule needs jitter as much as any other. A plain "*/15" starts
+// at zero for everyone, which is the stampede on the top of the hour that
+// jitter exists to prevent.
+func TestEveryStepsArePhaseShifted(t *testing.T) {
+	keys := []string{
+		"alpha-prod/restic", "bravo-prod/restic", "charlie-prod/restic",
+		"delta-prod/restic", "echo-prod/restic", "foxtrot-prod/restic",
+		"golf-prod/restic", "hotel-prod/restic", "india-prod/restic",
+	}
+	for _, schedule := range []string{"@every 15m", "@every 6h"} {
+		seen := map[string]bool{}
+		for _, key := range keys {
+			got, err := ResolveSchedule(schedule, key)
+			if err != nil {
+				t.Fatalf("ResolveSchedule(%q, %q) error = %v", schedule, key, err)
+			}
+			seen[got] = true
+		}
+		if len(seen) < 3 {
+			t.Errorf("%s produced only %d distinct schedules across %d keys, want spread",
+				schedule, len(seen), len(keys))
+		}
+	}
+}
+
+// The offset has to stay inside the step, or cron never reaches it: "20-59/15"
+// fires at 20, 35 and 50 but a "70-59/15" would fire never.
+func TestEveryOffsetStaysWithinTheStep(t *testing.T) {
+	for _, key := range []string{"a/x", "b/y", "c/z", "myapp-prod/restic", "zulu-staging/restic"} {
+		got, err := ResolveSchedule("@every 15m", key)
+		if err != nil {
+			t.Fatalf("ResolveSchedule error = %v", err)
+		}
+		var offset, step int
+		if _, err := fmt.Sscanf(strings.Fields(got)[0], "%d-59/%d", &offset, &step); err != nil {
+			t.Fatalf("unexpected minute field %q: %v", got, err)
+		}
+		if offset >= step {
+			t.Errorf("%q: offset %d is outside step %d, so it would fire less often than asked",
+				got, offset, step)
+		}
+	}
+
+	for _, key := range []string{"a/x", "b/y", "c/z", "myapp-prod/restic"} {
+		got, err := ResolveSchedule("@every 6h", key)
+		if err != nil {
+			t.Fatalf("ResolveSchedule error = %v", err)
+		}
+		var offset, step int
+		if _, err := fmt.Sscanf(strings.Fields(got)[1], "%d-23/%d", &offset, &step); err != nil {
+			t.Fatalf("unexpected hour field %q: %v", got, err)
+		}
+		if offset >= step {
+			t.Errorf("%q: hour offset %d is outside step %d", got, offset, step)
+		}
 	}
 }

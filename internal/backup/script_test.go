@@ -192,20 +192,9 @@ func TestShellQuoteEscapesSingleQuotes(t *testing.T) {
 		t.Fatalf("Render() error = %v", err)
 	}
 	want := `  --exclude='it'\''s; rm -rf /'`
-	if !contains(got, want) {
+	if !strings.Contains(got, want) {
 		t.Errorf("Render() did not escape the quote\n--- got ---\n%s\n--- want line ---\n%s", got, want)
 	}
-}
-
-func contains(haystack, needle string) bool {
-	return len(haystack) >= len(needle) && (func() bool {
-		for i := 0; i+len(needle) <= len(haystack); i++ {
-			if haystack[i:i+len(needle)] == needle {
-				return true
-			}
-		}
-		return false
-	})()
 }
 
 // Pruning takes an exclusive lock. Without a retry the backup that loses the
@@ -250,5 +239,37 @@ func TestRetryLockCanBeDisabled(t *testing.T) {
 		if strings.Contains(got, "--retry-lock") {
 			t.Errorf("Render() emitted --retry-lock for %v:\n%s", d, got)
 		}
+	}
+}
+
+// An ordinary path must render bare, because hack/parity compares the rendered
+// script against the hand-written one it replaces and quoting everything would
+// report a difference on every app.
+func TestOrdinaryPathsRenderUnquoted(t *testing.T) {
+	got, err := Render(&borgbasev1.ScheduledBackupSpec{
+		Sources: []borgbasev1.BackupSource{
+			{Type: borgbasev1.SourceTypeFiles, Path: "app/storage"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	if !strings.Contains(got, "--tag=files app/storage\n") {
+		t.Errorf("Render() quoted an ordinary path:\n%s", got)
+	}
+}
+
+// A path with a space would otherwise reach restic as two arguments.
+func TestPathWithSpaceIsQuoted(t *testing.T) {
+	got, err := Render(&borgbasev1.ScheduledBackupSpec{
+		Sources: []borgbasev1.BackupSource{
+			{Type: borgbasev1.SourceTypeFiles, Path: "app/user uploads"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	if !strings.Contains(got, `--tag=files 'app/user uploads'`) {
+		t.Errorf("Render() did not quote a path with a space:\n%s", got)
 	}
 }

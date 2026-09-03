@@ -349,7 +349,7 @@ type ScheduledBackupSpec struct {
 	// Set it to 0 to pass no flag at all, restoring restic's default of
 	// failing immediately.
 	// +kubebuilder:default:="5m"
-	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$`
+	// +kubebuilder:validation:XValidation:rule="self == '0' || self.matches('^([0-9]+([.][0-9]+)?(ns|us|ms|s|m|h))+$')",message="must be a Go duration such as 30m, 1h or 1h30m"
 	// +optional
 	RetryLock *metav1.Duration `json:"retryLock,omitempty"`
 

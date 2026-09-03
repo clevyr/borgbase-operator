@@ -4,6 +4,7 @@ package backup
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	borgbasev1 "github.com/clevyr/borgbase-operator/api/v1"
@@ -73,7 +74,8 @@ func renderSource(src borgbasev1.BackupSource, retryLock string) (string, error)
 	case borgbasev1.SourceTypeFiles:
 		// Files are backed up in place, relative to the container's working
 		// directory, with excludes on continuation lines for readability.
-		line := fmt.Sprintf("restic backup%s --tag=%s %s", retryLock, tag, src.EffectivePath())
+		line := fmt.Sprintf("restic backup%s --tag=%s %s",
+			retryLock, tag, shellQuoteIfNeeded(src.EffectivePath()))
 		if len(src.Exclude) == 0 {
 			return line, nil
 		}
@@ -92,7 +94,7 @@ func renderSource(src borgbasev1.BackupSource, retryLock string) (string, error)
 		fmt.Fprintf(&sb, "restic backup%s --tag=%s --stdin-from-command -- dumpdb %s",
 			retryLock, tag, src.Type)
 		if src.Database != "" {
-			sb.WriteString(" --database=" + src.Database)
+			sb.WriteString(" --database=" + shellQuoteIfNeeded(src.Database))
 		}
 		if len(src.ExtraArgs) > 0 {
 			sb.WriteString(" --")
@@ -138,4 +140,18 @@ func renderForget(r *borgbasev1.Retention, retryLock string) string {
 // instead of being expanded by the shell.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// safeBare matches values that mean the same thing quoted or not, so ordinary
+// paths keep rendering exactly as the hand-written scripts did and hack/parity
+// stays a meaningful comparison.
+var safeBare = regexp.MustCompile(`^[A-Za-z0-9_.:@%+,/=-]+$`)
+
+// shellQuoteIfNeeded quotes only values the shell would otherwise mangle, such
+// as a path containing a space.
+func shellQuoteIfNeeded(s string) string {
+	if s != "" && safeBare.MatchString(s) {
+		return s
+	}
+	return shellQuote(s)
 }

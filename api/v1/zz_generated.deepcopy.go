@@ -383,6 +383,11 @@ func (in *ScheduledBackupSpec) DeepCopyInto(out *ScheduledBackupSpec) {
 		*out = new(corev1.Affinity)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.PodSecurityContext != nil {
+		in, out := &in.PodSecurityContext, &out.PodSecurityContext
+		*out = new(corev1.PodSecurityContext)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.PodLabels != nil {
 		in, out := &in.PodLabels, &out.PodLabels
 		*out = make(map[string]string, len(*in))

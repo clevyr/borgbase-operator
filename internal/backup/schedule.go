@@ -3,7 +3,6 @@ package backup
 import (
 	"fmt"
 	"hash/fnv"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -49,7 +48,7 @@ func ResolveSchedule(schedule, key string) (string, error) {
 	case schedule == "@yearly" || schedule == "@annually":
 		return fmt.Sprintf("%d %d %d %d *", minute, hour, (h/1440)%28+1, (h/40320)%12+1), nil
 	case strings.HasPrefix(schedule, "@every "):
-		return resolveEvery(strings.TrimSpace(strings.TrimPrefix(schedule, "@every ")), minute)
+		return resolveEvery(strings.TrimSpace(strings.TrimPrefix(schedule, "@every ")), minute, hour)
 	default:
 		return "", fmt.Errorf("unknown schedule shorthand %q", schedule)
 	}
@@ -61,7 +60,12 @@ func ResolveSchedule(schedule, key string) (string, error) {
 // steps restart at the top of each period, so "@every 7h" would fire at 00:00,
 // 07:00, 14:00, 21:00 and then again at 00:00 three hours later - an uneven gap
 // that is almost never what someone means.
-func resolveEvery(d string, minute int) (string, error) {
+//
+// The steps are phase-shifted with the range form, "M-59/15" rather than
+// "*/15", so that a stepped schedule is jittered like every other shorthand.
+// A plain step always starts at zero, which is exactly the stampede on the
+// top of the hour that jitter exists to avoid.
+func resolveEvery(d string, minute, hour int) (string, error) {
 	dur, err := time.ParseDuration(d)
 	if err != nil {
 		return "", fmt.Errorf("parsing @every duration %q: %w", d, err)
@@ -78,7 +82,7 @@ func resolveEvery(d string, minute int) (string, error) {
 		if 60%mins != 0 {
 			return "", fmt.Errorf("@every duration %q must divide evenly into an hour", d)
 		}
-		return fmt.Sprintf("*/%d * * * *", mins), nil
+		return fmt.Sprintf("%d-59/%d * * * *", minute%mins, mins), nil
 
 	case dur == time.Hour:
 		return fmt.Sprintf("%d * * * *", minute), nil
@@ -91,10 +95,14 @@ func resolveEvery(d string, minute int) (string, error) {
 		if 24%hours != 0 {
 			return "", fmt.Errorf("@every duration %q must divide evenly into a day", d)
 		}
-		return fmt.Sprintf("%d */%d * * *", minute, hours), nil
+		return fmt.Sprintf("%d %d-23/%d * * *", minute, hour%hours, hours), nil
 
 	case dur == 24*time.Hour:
-		return fmt.Sprintf("%d %d * * *", minute, (jitter(strconv.Itoa(minute))/60)%24), nil
+		// Identical to "@daily": hashing anything else here (the minute, say)
+		// would spread daily backups over far fewer slots than the key can
+		// address, and give the same resource two different times depending on
+		// how its schedule was spelled.
+		return fmt.Sprintf("%d %d * * *", minute, hour), nil
 
 	default:
 		return "", fmt.Errorf("@every duration %q is longer than a day; use an explicit cron expression", d)

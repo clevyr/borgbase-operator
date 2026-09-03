@@ -280,3 +280,113 @@ func TestUserEnvIsSorted(t *testing.T) {
 		}
 	}
 }
+
+// dumpdb is invoked without --secret-mount, so it reads a fixed path per
+// engine. Mounting at a path derived from the Secret name, as this used to,
+// left a custom secretName's credentials somewhere dumpdb never looks: the
+// backup then failed at run time with nothing wrong at apply time.
+func TestDatabaseSecretMountsWhereDumpdbLooks(t *testing.T) {
+	tests := []struct {
+		name       string
+		engine     borgbasev1.DatabaseEngine
+		secretName string
+		wantPath   string
+	}{
+		{"cnpg default", borgbasev1.DatabaseEngineCNPG, "", "/postgresql-app"},
+		{"cnpg custom secret", borgbasev1.DatabaseEngineCNPG, "myapp-db-creds", "/postgresql-app"},
+		{"mariadb default", borgbasev1.DatabaseEngineMariaDB, "", "/mariadb"},
+		{"mariadb custom secret", borgbasev1.DatabaseEngineMariaDB, "legacy-mysql", "/mariadb"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sb := testBackup(func(s *borgbasev1.ScheduledBackup) {
+				s.Spec.Database = &borgbasev1.DatabaseSpec{
+					Engine:     tt.engine,
+					SecretName: tt.secretName,
+					Host:       mariadbName, Name: testDBName, User: testDBName,
+				}
+			})
+			cj, err := BuildCronJob(sb, testRepo(), testConfig())
+			if err != nil {
+				t.Fatalf("BuildCronJob() error = %v", err)
+			}
+			spec := cj.Spec.JobTemplate.Spec.Template.Spec
+
+			var mount *corev1.VolumeMount
+			for i := range spec.Containers[0].VolumeMounts {
+				if spec.Containers[0].VolumeMounts[i].Name == "db-credentials" {
+					mount = &spec.Containers[0].VolumeMounts[i]
+				}
+			}
+			if mount == nil {
+				t.Fatal("no db-credentials mount")
+			}
+			if mount.MountPath != tt.wantPath {
+				t.Errorf("mounted at %q, want %q", mount.MountPath, tt.wantPath)
+			}
+
+			// The volume still refers to whatever Secret was asked for.
+			var volume *corev1.Volume
+			for i := range spec.Volumes {
+				if spec.Volumes[i].Name == "db-credentials" {
+					volume = &spec.Volumes[i]
+				}
+			}
+			if volume == nil || volume.Secret == nil {
+				t.Fatal("no db-credentials volume")
+			}
+			want := tt.secretName
+			if want == "" {
+				want = sb.Spec.Database.EffectiveSecretName()
+			}
+			if volume.Secret.SecretName != want {
+				t.Errorf("volume references Secret %q, want %q", volume.Secret.SecretName, want)
+			}
+		})
+	}
+}
+
+// The backup pod talks to restic and the database, never to the API server.
+func TestBackupPodDropsCapabilitiesAndToken(t *testing.T) {
+	cj, err := BuildCronJob(testBackup(nil), testRepo(), testConfig())
+	if err != nil {
+		t.Fatalf("BuildCronJob() error = %v", err)
+	}
+	spec := cj.Spec.JobTemplate.Spec.Template.Spec
+
+	if automount := spec.AutomountServiceAccountToken; automount == nil || *automount {
+		t.Error("backup pod should not mount a service account token")
+	}
+	caps := spec.Containers[0].SecurityContext.Capabilities
+	if caps == nil || !slices.Contains(caps.Drop, corev1.Capability("ALL")) {
+		t.Errorf("capabilities = %v, want ALL dropped", caps)
+	}
+	if sc := spec.SecurityContext; sc == nil || sc.SeccompProfile == nil {
+		t.Error("expected the default seccomp profile")
+	}
+}
+
+// A namespace enforcing the restricted Pod Security Standard needs to supply
+// runAsNonRoot itself, because the operator cannot know what owns the data the
+// backup has to read.
+func TestPodSecurityContextOverride(t *testing.T) {
+	sb := testBackup(func(s *borgbasev1.ScheduledBackup) {
+		s.Spec.PodSecurityContext = &corev1.PodSecurityContext{
+			RunAsNonRoot: ptr.To(true),
+			RunAsUser:    ptr.To(int64(1000)),
+			FSGroup:      ptr.To(int64(1000)),
+		}
+	})
+	cj, err := BuildCronJob(sb, testRepo(), testConfig())
+	if err != nil {
+		t.Fatalf("BuildCronJob() error = %v", err)
+	}
+	sc := cj.Spec.JobTemplate.Spec.Template.Spec.SecurityContext
+	if sc == nil || sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
+		t.Fatalf("securityContext = %+v, want the override applied", sc)
+	}
+	if sc.RunAsUser == nil || *sc.RunAsUser != 1000 {
+		t.Errorf("runAsUser = %v, want 1000", sc.RunAsUser)
+	}
+}

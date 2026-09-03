@@ -161,6 +161,7 @@ func BuildCronJob(
 		Resources:    resources(sb),
 		SecurityContext: &corev1.SecurityContext{
 			AllowPrivilegeEscalation: ptr.To(false),
+			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		},
 	}
 	if sb.Spec.Volume != nil {
@@ -195,9 +196,12 @@ func BuildCronJob(
 							Containers:    []corev1.Container{container},
 							Volumes:       volumes,
 							Affinity:      buildAffinity(sb),
-							SecurityContext: &corev1.PodSecurityContext{
-								SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-							},
+							// The backup talks to restic and the database, never
+							// to the API server, so a mounted token is exposure
+							// of the namespace's default ServiceAccount for
+							// nothing.
+							AutomountServiceAccountToken: ptr.To(false),
+							SecurityContext:              podSecurityContext(sb),
 						},
 					},
 				},
@@ -246,9 +250,25 @@ func podLabels(sb *borgbasev1.ScheduledBackup) map[string]string {
 	return labels
 }
 
-// reporter resolves this backup's healthchecks settings, defaulting the check
-// slug to the namespace.
-func reporter(sb *borgbasev1.ScheduledBackup, cfg Config) healthchecks.Reporter {
+// podSecurityContext returns the pod's security context.
+//
+// The default sets only the seccomp profile. runAsNonRoot is deliberately not
+// forced: a files backup has to read the app's data, and the operator cannot
+// know what owns it. Namespaces enforcing the restricted Pod Security Standard
+// supply their own context through spec.podSecurityContext.
+func podSecurityContext(sb *borgbasev1.ScheduledBackup) *corev1.PodSecurityContext {
+	if sb.Spec.PodSecurityContext != nil {
+		return sb.Spec.PodSecurityContext
+	}
+	return &corev1.PodSecurityContext{
+		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+}
+
+// Reporter resolves this backup's healthchecks settings, defaulting the check
+// slug to the namespace. It is exported so the controller can detect two
+// backups in one namespace resolving to the same check.
+func Reporter(sb *borgbasev1.ScheduledBackup, cfg Config) healthchecks.Reporter {
 	var o healthchecks.Overrides
 	if hc := sb.Spec.Healthchecks; hc != nil {
 		o = healthchecks.Overrides{
@@ -266,7 +286,7 @@ func reporter(sb *borgbasev1.ScheduledBackup, cfg Config) healthchecks.Reporter 
 // buildCommand renders the container command, wrapped for healthchecks
 // reporting when it is enabled.
 func buildCommand(sb *borgbasev1.ScheduledBackup, cfg Config, script string) []string {
-	return reporter(sb, cfg).Wrap([]string{"sh", "-c", script})
+	return Reporter(sb, cfg).Wrap([]string{"sh", "-c", script})
 }
 
 // buildEnv assembles the container environment.
@@ -296,7 +316,7 @@ func buildEnv(sb *borgbasev1.ScheduledBackup, cfg Config) ([]corev1.EnvVar, erro
 		)
 	}
 
-	hcEnv, err := reporter(sb, cfg).Env()
+	hcEnv, err := Reporter(sb, cfg).Env()
 	if err != nil {
 		return nil, err
 	}
@@ -324,14 +344,16 @@ func buildVolumes(sb *borgbasev1.ScheduledBackup) ([]corev1.Volume, []corev1.Vol
 	}
 
 	if db := sb.Spec.Database; db != nil {
-		name := db.EffectiveSecretName()
 		volumes = append(volumes, corev1.Volume{
 			Name:   "db-credentials",
-			Secret: &corev1.SecretVolumeSource{SecretName: name},
+			Secret: &corev1.SecretVolumeSource{SecretName: db.EffectiveSecretName()},
 		})
-		// dumpdb looks for the credentials at a path named after the Secret.
+		// Mounted where dumpdb looks, which is a fixed path per engine, not one
+		// derived from the Secret name. dumpdb is invoked without
+		// --secret-mount, so a custom secretName mounted at /<secretName> left
+		// the dump unable to find its credentials at all.
 		mounts = append(mounts, corev1.VolumeMount{
-			Name: "db-credentials", MountPath: "/" + name, ReadOnly: true,
+			Name: "db-credentials", MountPath: db.MountPath(), ReadOnly: true,
 		})
 	}
 

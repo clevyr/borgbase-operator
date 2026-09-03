@@ -8,14 +8,19 @@ rules:
   - ""
   resources:
   - persistentvolumeclaims
+  verbs:
+  - create
+  - delete
+  - get
+- apiGroups:
+  - ""
+  resources:
   - secrets
   verbs:
   - create
   - get
-  - list
   - patch
   - update
-  - watch
 - apiGroups:
   - ""
   - events.k8s.io

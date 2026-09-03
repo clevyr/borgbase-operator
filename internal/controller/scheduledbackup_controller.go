@@ -46,7 +46,7 @@ type ScheduledBackupReconciler struct {
 // +kubebuilder:rbac:groups=borgbase.clevyr.com,resources=scheduledbackups/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=borgbase.clevyr.com,resources=scheduledbackups/finalizers,verbs=update
 // +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;create;delete
 
 // Reconcile renders a ScheduledBackup into a CronJob and its cache volume.
 func (r *ScheduledBackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -110,6 +110,24 @@ func (r *ScheduledBackupReconciler) reconcile(
 		return ctrl.Result{}, nil
 	}
 
+	// Two backups reporting to one healthchecks check would let either one's
+	// success hide the other's failure, which defeats the point of a dead
+	// man's switch.
+	if other, err := r.slugConflict(ctx, sb); err != nil {
+		return ctrl.Result{}, err
+	} else if other != "" {
+		r.setCondition(sb, metav1.Condition{
+			Type:   borgbasev1.ScheduledBackupConditionReady,
+			Status: metav1.ConditionFalse,
+			Reason: "SlugConflict",
+			Message: fmt.Sprintf(
+				"healthchecks slug %q is already reported by ScheduledBackup %q; "+
+					"set spec.healthchecks.slug to something unique",
+				backup.Reporter(sb, r.Config).Slug(), other),
+		})
+		return ctrl.Result{}, nil
+	}
+
 	if err := r.reconcileCache(ctx, sb); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -127,6 +145,14 @@ func (r *ScheduledBackupReconciler) reconcile(
 	switch {
 	case apierrors.IsNotFound(err):
 		if err := r.Create(ctx, desired); err != nil {
+			if apierrors.IsAlreadyExists(err) {
+				// The cache only holds CronJobs this operator labelled, so a
+				// name taken by something else looks absent right up until the
+				// create fails. Say so, rather than looping on a bare conflict.
+				return ctrl.Result{}, fmt.Errorf(
+					"CronJob %s already exists but is not managed by this operator; "+
+						"remove it or rename the ScheduledBackup", desired.Name)
+			}
 			return ctrl.Result{}, fmt.Errorf("creating cronjob: %w", err)
 		}
 		r.Recorder.Eventf(sb, nil, corev1.EventTypeNormal, "CronJobCreated", "Create",
@@ -174,7 +200,7 @@ func (r *ScheduledBackupReconciler) reconcileCache(
 		return err
 	}
 	if desired == nil {
-		return nil
+		return r.deleteCache(ctx, sb)
 	}
 	if err := controllerutil.SetControllerReference(sb, desired, r.Scheme); err != nil {
 		return err
@@ -189,6 +215,68 @@ func (r *ScheduledBackupReconciler) reconcileCache(
 		return nil
 	}
 	return err
+}
+
+// deleteCache removes a cache volume the operator created, once the cache has
+// been turned off. A claim the operator does not own is left alone.
+func (r *ScheduledBackupReconciler) deleteCache(
+	ctx context.Context, sb *borgbasev1.ScheduledBackup,
+) error {
+	var pvc corev1.PersistentVolumeClaim
+	key := types.NamespacedName{Namespace: sb.Namespace, Name: backup.CacheName(sb)}
+	if err := r.Get(ctx, key, &pvc); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if owner := metav1.GetControllerOf(&pvc); owner == nil || owner.UID != sb.UID {
+		return nil
+	}
+	if err := r.Delete(ctx, &pvc); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("deleting cache volume: %w", err)
+	}
+	return nil
+}
+
+// slugConflict returns the name of another ScheduledBackup in this namespace
+// that already pings the same healthchecks check, or "" when there is none.
+//
+// Only a backup that was created earlier counts as the incumbent, so the one
+// already reporting keeps working and the newcomer is the one held back.
+func (r *ScheduledBackupReconciler) slugConflict(
+	ctx context.Context, sb *borgbasev1.ScheduledBackup,
+) (string, error) {
+	mine := backup.Reporter(sb, r.Config)
+	if !mine.Enabled() || mine.PingsByUUID() {
+		return "", nil
+	}
+
+	var list borgbasev1.ScheduledBackupList
+	if err := r.List(ctx, &list, client.InNamespace(sb.Namespace)); err != nil {
+		return "", fmt.Errorf("listing backups in %s: %w", sb.Namespace, err)
+	}
+
+	for i := range list.Items {
+		other := &list.Items[i]
+		if other.Name == sb.Name || !other.DeletionTimestamp.IsZero() {
+			continue
+		}
+		theirs := backup.Reporter(other, r.Config)
+		if !theirs.Enabled() || theirs.PingsByUUID() || theirs.Slug() != mine.Slug() {
+			continue
+		}
+		if olderThan(other, sb) {
+			return other.Name, nil
+		}
+	}
+	return "", nil
+}
+
+// olderThan reports whether a was created before b, falling back to name order
+// so that two objects created in the same second still resolve consistently.
+func olderThan(a, b *borgbasev1.ScheduledBackup) bool {
+	if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
+		return a.CreationTimestamp.Before(&b.CreationTimestamp)
+	}
+	return a.Name < b.Name
 }
 
 // patchStatus writes the computed status as a merge patch, avoiding the
@@ -237,7 +325,6 @@ func (r *ScheduledBackupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&borgbasev1.Repository{},
 			handler.EnqueueRequestsFromMapFunc(r.backupsForRepository),
-			builder.WithPredicates(),
 		).
 		Named("scheduledbackup").
 		Complete(r)

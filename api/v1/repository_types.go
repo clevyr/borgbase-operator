@@ -45,7 +45,7 @@ type RepositorySpec struct {
 	// The pattern matters: the API server stores this as a plain string, and a
 	// value Go cannot parse would break decoding of every Repository at once.
 	// +kubebuilder:default:="1h"
-	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$`
+	// +kubebuilder:validation:XValidation:rule="self == '0' || self.matches('^([0-9]+([.][0-9]+)?(ns|us|ms|s|m|h))+$')",message="must be a Go duration such as 30m, 1h or 1h30m"
 	// +optional
 	Interval *metav1.Duration `json:"interval,omitempty"`
 
