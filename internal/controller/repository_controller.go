@@ -9,6 +9,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -92,8 +93,9 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if !controllerutil.ContainsFinalizer(&repo, FinalizerName) {
+		patch := client.MergeFrom(repo.DeepCopy())
 		controllerutil.AddFinalizer(&repo, FinalizerName)
-		if err := r.Update(ctx, &repo); err != nil {
+		if err := r.Patch(ctx, &repo, patch); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -102,6 +104,10 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		logger.V(1).Info("reconciliation suspended")
 		return ctrl.Result{}, nil
 	}
+
+	// Captured after the finalizer patch so the status patch is computed
+	// against what the object looks like now.
+	statusBase := repo.DeepCopy()
 
 	result, err := r.reconcile(ctx, &repo, api)
 	if err != nil {
@@ -113,13 +119,13 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		r.setCondition(&repo, meta)
 		r.Recorder.Eventf(&repo, nil, corev1.EventTypeWarning, "ReconcileFailed", "Reconcile", "%s", err.Error())
-		if statusErr := r.updateStatus(ctx, &repo); statusErr != nil {
+		if statusErr := r.patchStatus(ctx, &repo, statusBase); statusErr != nil {
 			logger.Error(statusErr, "updating status after a failed reconcile")
 		}
 		return ctrl.Result{}, err
 	}
 
-	if err := r.updateStatus(ctx, &repo); err != nil {
+	if err := r.patchStatus(ctx, &repo, statusBase); err != nil {
 		return ctrl.Result{}, err
 	}
 	return result, nil
@@ -509,8 +515,9 @@ func (r *RepositoryReconciler) finalize(
 			repo.Status.RepositoryID)
 	}
 
+	patch := client.MergeFrom(repo.DeepCopy())
 	controllerutil.RemoveFinalizer(repo, FinalizerName)
-	return r.Update(ctx, repo)
+	return r.Patch(ctx, repo, patch)
 }
 
 // apiFor builds a BorgBase client using the repository's token or the default.
@@ -573,9 +580,21 @@ func (r *RepositoryReconciler) setCondition(repo *borgbasev1.Repository, cond me
 	apimeta.SetStatusCondition(&repo.Status.Conditions, cond)
 }
 
-func (r *RepositoryReconciler) updateStatus(ctx context.Context, repo *borgbasev1.Repository) error {
+// patchStatus writes the computed status as a merge patch.
+//
+// A full Update carries the resourceVersion read from the informer cache, which
+// lags behind this controller's own writes. That produced spurious "the object
+// has been modified" conflicts, and because the status never landed, the next
+// reconcile re-ran initialization from scratch. A merge patch has no such
+// precondition, and the whole status is recomputed each pass anyway.
+func (r *RepositoryReconciler) patchStatus(
+	ctx context.Context, repo *borgbasev1.Repository, base *borgbasev1.Repository,
+) error {
 	repo.Status.ObservedGeneration = repo.Generation
-	return r.Status().Update(ctx, repo)
+	if equality.Semantic.DeepEqual(repo.Status, base.Status) {
+		return nil
+	}
+	return r.Status().Patch(ctx, repo, client.MergeFrom(base))
 }
 
 // SetupWithManager sets up the controller with the Manager.

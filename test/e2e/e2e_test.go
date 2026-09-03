@@ -312,6 +312,77 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cronjobs).To(BeEmpty(), "a backup was scheduled against a missing repository")
 		})
+
+		// Status used to be written with a full Update, which carries the
+		// resourceVersion read from the informer cache. That cache lags behind
+		// the controller's own writes, so the write lost a conflict, the status
+		// never landed, and the next pass redid work it had already done. A
+		// fake client has no cache and cannot reproduce this, so it is asserted
+		// against a real API server here.
+		It("should persist status without conflicting on its own writes", func() {
+			const (
+				testNS = "borgbase-e2e-status"
+				name   = "churn"
+			)
+
+			By("creating a test namespace")
+			cmd := exec.Command("kubectl", "create", "ns", testNS)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create the test namespace")
+			DeferCleanup(func() {
+				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found"))
+			})
+
+			manifest := fmt.Sprintf(`apiVersion: borgbase.clevyr.com/v1
+kind: ScheduledBackup
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  repositoryRef:
+    name: does-not-exist
+  schedule: "@hourly"
+  sources:
+    - type: cnpg
+      tag: db
+  healthchecks:
+    enabled: false
+`, name, testNS)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(manifest)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply the ScheduledBackup")
+
+			By("forcing repeated reconciles")
+			// Each spec change bumps the generation, so the controller writes
+			// status again while the cache is still catching up from the last.
+			for i := range 5 {
+				cmd = exec.Command("kubectl", "patch", "scheduledbackup", name, "-n", testNS,
+					"--type=merge", "-p", fmt.Sprintf(`{"spec":{"timeZone":"Etc/GMT+%d"}}`, i+1))
+				_, err = utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred(), "Failed to patch the ScheduledBackup")
+			}
+
+			By("waiting for status to catch up with the latest generation")
+			verifyObserved := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "scheduledbackup", name, "-n", testNS,
+					"-o", "jsonpath={.metadata.generation},{.status.observedGeneration}")
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				parts := strings.Split(strings.TrimSpace(out), ",")
+				g.Expect(parts).To(HaveLen(2))
+				g.Expect(parts[1]).To(Equal(parts[0]),
+					"observedGeneration never caught up, so a status write was lost")
+			}
+			Eventually(verifyObserved, 2*time.Minute).Should(Succeed())
+
+			By("verifying the controller logged no resourceVersion conflicts")
+			cmd = exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
+			logs, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to read controller logs")
+			Expect(logs).NotTo(ContainSubstring("the object has been modified"),
+				"the controller conflicted with its own writes")
+		})
 	})
 })
 

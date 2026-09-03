@@ -7,6 +7,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -53,6 +54,8 @@ func (r *ScheduledBackupReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	statusBase := sb.DeepCopy()
+
 	result, err := r.reconcile(ctx, &sb)
 	if err != nil {
 		r.setCondition(&sb, metav1.Condition{
@@ -62,14 +65,13 @@ func (r *ScheduledBackupReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			Message: err.Error(),
 		})
 		r.Recorder.Eventf(&sb, nil, corev1.EventTypeWarning, "ReconcileFailed", "Reconcile", "%s", err.Error())
-		if statusErr := r.Status().Update(ctx, &sb); statusErr != nil {
+		if statusErr := r.patchStatus(ctx, &sb, statusBase); statusErr != nil {
 			log.FromContext(ctx).Error(statusErr, "updating status after a failed reconcile")
 		}
 		return ctrl.Result{}, err
 	}
 
-	sb.Status.ObservedGeneration = sb.Generation
-	if err := r.Status().Update(ctx, &sb); err != nil {
+	if err := r.patchStatus(ctx, &sb, statusBase); err != nil {
 		return ctrl.Result{}, err
 	}
 	return result, nil
@@ -186,6 +188,19 @@ func (r *ScheduledBackupReconciler) reconcileCache(
 		return nil
 	}
 	return err
+}
+
+// patchStatus writes the computed status as a merge patch, avoiding the
+// resourceVersion conflicts a full Update hits when reading from a lagging
+// informer cache.
+func (r *ScheduledBackupReconciler) patchStatus(
+	ctx context.Context, sb *borgbasev1.ScheduledBackup, base *borgbasev1.ScheduledBackup,
+) error {
+	sb.Status.ObservedGeneration = sb.Generation
+	if equality.Semantic.DeepEqual(sb.Status, base.Status) {
+		return nil
+	}
+	return r.Status().Patch(ctx, sb, client.MergeFrom(base))
 }
 
 func (r *ScheduledBackupReconciler) setCondition(
