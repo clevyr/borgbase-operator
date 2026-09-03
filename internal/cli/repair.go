@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/rand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	borgbasev1 "github.com/clevyr/borgbase-operator/api/v1"
@@ -139,7 +140,7 @@ you have somewhere to put it.`,
 }
 
 func newKeySecretName(repo *borgbasev1.Repository) string {
-	return repo.Name + "-corg-newkey"
+	return repo.Name + "-corg-newkey-" + rand.String(5)
 }
 
 const newKeyMountPath = "/newkey"
@@ -171,10 +172,18 @@ func runRotatePassword(
 		Labels:    map[string]string{"app.kubernetes.io/managed-by": runner.ManagedByValue},
 		Data:      map[string][]byte{"password": []byte(password)},
 	}
-	if err := c.Create(ctx, temp); err != nil && !apierrors.IsAlreadyExists(err) {
+	if err := c.Create(ctx, temp); err != nil {
 		return fmt.Errorf("creating the temporary key Secret: %w", err)
 	}
-	defer func() { _ = deleteTempKeySecret(c, temp) }()
+
+	defer func() {
+		if err := deleteTempKeySecret(c, temp); err != nil {
+			p := newPrinter(f.Streams.ErrOut)
+			p.printf("! could not delete the temporary key secret/%s: %v\n", temp.Name, err)
+			p.printf("! it holds the new password in plaintext; delete it with: kubectl -n %s delete secret %s\n",
+				temp.Namespace, temp.Name)
+		}
+	}()
 
 	run, err := f.Runner()
 	if err != nil {
@@ -204,6 +213,9 @@ func runRotatePassword(
 	}
 
 	patch := client.MergeFrom(current.DeepCopy())
+	if current.Data == nil {
+		current.Data = make(map[string][]byte, 1)
+	}
 	current.Data[controller.KeyResticPassword] = []byte(password)
 	if err := c.Patch(ctx, current, patch); err != nil {
 		return fmt.Errorf("updating %s in secret/%s: %w",
