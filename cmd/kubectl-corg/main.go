@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 
@@ -16,7 +20,13 @@ func main() {
 		ErrOut: os.Stderr,
 	}
 
-	if err := cli.New(streams, os.Args[0]).Execute(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := cli.New(streams, os.Args[0]).ExecuteContext(ctx); err != nil {
+		if errors.Is(err, context.Canceled) {
+			os.Exit(130)
+		}
 		_, _ = fmt.Fprintln(streams.ErrOut, "error:", err)
 		os.Exit(1)
 	}
