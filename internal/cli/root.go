@@ -74,6 +74,10 @@ restores snapshots, and drops you into a shell with restic already configured.`,
 	subcommands := []*cobra.Command{
 		newDoctorCommand(f),
 		newGetCommand(f),
+		newLogsCommand(f),
+		newSuspendCommand(f),
+		newResumeCommand(f),
+		newEnvCommand(f),
 		newVersionCommand(f),
 	}
 

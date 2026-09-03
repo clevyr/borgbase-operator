@@ -1,0 +1,77 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"strings"
+	"testing"
+
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	borgbasev1 "github.com/clevyr/borgbase-operator/api/v1"
+)
+
+func setSuspend(t *testing.T, c client.Client, arg string, suspend bool) string {
+	t.Helper()
+	past := "resumed"
+	if suspend {
+		past = "suspended"
+	}
+	var buf bytes.Buffer
+	if err := runSetSuspend(context.Background(), c, &buf, "prod", arg, suspend, past); err != nil {
+		t.Fatalf("runSetSuspend: %v", err)
+	}
+	return buf.String()
+}
+
+func TestSuspendAndResumeScheduledBackup(t *testing.T) {
+	sb := readyBackup("prod", "web-files", "store")
+	c := newClient(t, sb)
+	ctx := context.Background()
+
+	if out := setSuspend(t, c, "sb/web-files", true); !strings.Contains(out, "suspended") {
+		t.Errorf("unexpected output: %q", out)
+	}
+
+	var got borgbasev1.ScheduledBackup
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "prod", Name: "web-files"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Spec.Suspend {
+		t.Fatal("spec.suspend was not set")
+	}
+
+	setSuspend(t, c, "sb/web-files", false)
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "prod", Name: "web-files"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Spec.Suspend {
+		t.Error("spec.suspend was not cleared")
+	}
+}
+
+func TestSuspendRepository(t *testing.T) {
+	c := newClient(t, newRepo("prod", "store"))
+	setSuspend(t, c, "repo/store", true)
+
+	var got borgbasev1.Repository
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "prod", Name: "store"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Spec.Suspend {
+		t.Error("spec.suspend was not set on the repository")
+	}
+}
+
+// Re-suspending must be a no-op rather than a pointless write.
+func TestSuspendIsIdempotent(t *testing.T) {
+	sb := readyBackup("prod", "web-files", "store")
+	sb.Spec.Suspend = true
+	c := newClient(t, sb)
+
+	out := setSuspend(t, c, "sb/web-files", true)
+	if !strings.Contains(out, "already suspended") {
+		t.Errorf("expected an already-suspended notice, got %q", out)
+	}
+}
