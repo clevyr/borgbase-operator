@@ -143,7 +143,7 @@ func shellQuote(s string) string {
 }
 
 // safeBare matches values that mean the same thing quoted or not, so ordinary
-// paths keep rendering exactly as the hand-written scripts did and hack/parity
+// paths keep rendering exactly as the hand-written scripts did and corg parity
 // stays a meaningful comparison.
 var safeBare = regexp.MustCompile(`^[A-Za-z0-9_.:@%+,/=-]+$`)
 

@@ -242,7 +242,7 @@ func TestRetryLockCanBeDisabled(t *testing.T) {
 	}
 }
 
-// An ordinary path must render bare, because hack/parity compares the rendered
+// An ordinary path must render bare, because corg parity compares the rendered
 // script against the hand-written one it replaces and quoting everything would
 // report a difference on every app.
 func TestOrdinaryPathsRenderUnquoted(t *testing.T) {

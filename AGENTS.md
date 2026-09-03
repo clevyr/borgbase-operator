@@ -8,6 +8,7 @@ what the two resources are for and why the defaults are what they are.
 
 ```
 cmd/main.go                    Manager entry and operator-level flags
+cmd/kubectl-corg/              corg CLI entry, also the kubectl plugin
 api/v1/*_types.go              CRD schemas (+kubebuilder markers)
 api/v1/zz_generated.*          Auto-generated (DO NOT EDIT)
 internal/controller/           Reconciliation for both kinds
@@ -15,11 +16,13 @@ internal/backup/               Rendering: CronJob, schedule, backup script
 internal/borgbase/             GraphQL client for the BorgBase API
 internal/healthchecks/         runitor wrapping, no API client of its own
 internal/secrets/              Restic password generation
+internal/cli/                  corg commands, including corg parity
+internal/cli/runner/           Ephemeral Jobs for one-off restic commands
 config/crd/bases/              Generated CRDs (DO NOT EDIT)
 config/rbac/role.yaml          Generated RBAC (DO NOT EDIT)
+config/rbac/corg_*_role.yaml   Roles for people running the CLI
 config/samples/                Example CRs, checked by make test-crd
 hack/migrate.sh                Generate resources from a hand-written backup
-hack/parity/                   Compare generated output against the original
 PROJECT                        Kubebuilder metadata (DO NOT EDIT)
 ```
 
@@ -83,7 +86,7 @@ class, `[.]`, instead.
 emits the two resources, converting a hand-jittered cron expression into the
 equivalent shorthand so the operator can jitter it instead.
 
-`hack/parity` then compares the generated script, schedule and time zone
+`corg parity` then compares the generated script, schedule and time zone
 against the original. Migrating must not silently change what gets backed up or
 how often, so any change to `internal/backup/script.go` or `schedule.go` has to
 keep parity meaningful. It normalises away only the quoting around `--exclude`
@@ -91,6 +94,12 @@ patterns and the `--retry-lock` flag, and compares the schedule by **cadence**,
 expanding both expressions over 28 days and comparing how often they fire.
 Comparing schedules verbatim would report a difference for every app, since
 migration moves the time on purpose, and hide the ones that matter.
+
+That comparison lives in `internal/cli/cadence.go`. Note that when both
+day-of-month and day-of-week are restricted, real cron ORs them where this
+ANDs. Migration only converts expressions whose day, month and weekday are all
+`*`, and a pinned schedule is compared against itself, so it cannot bite there
+-- but `corg parity` is now general-purpose and could be handed something else.
 
 ## Logging
 

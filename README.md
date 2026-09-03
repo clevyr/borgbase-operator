@@ -155,7 +155,7 @@ schedule handed back to the operator (see below).
 
 ```sh
 hack/migrate.sh ../fleet-infra/apps/fennec/myapp/prod/resources/restic > generated.yaml
-go run ./hack/parity generated.yaml ../fleet-infra/apps/fennec/myapp/prod/resources/restic/helmrelease.yaml
+corg parity generated.yaml ../fleet-infra/apps/fennec/myapp/prod/resources/restic/helmrelease.yaml
 ```
 
 ```
@@ -163,7 +163,7 @@ RESCHEDULED: "20 0 * * *" -> "33 20 * * *" (every 24h0m0s either way; the operat
 EQUIVALENT
 ```
 
-`hack/parity` renders the generated resource and compares it against the
+`corg parity` renders the generated resource and compares it against the
 original. The script must match, ignoring only the optional quoting around
 `--exclude` patterns and the `--retry-lock` flag. The schedule is compared by
 **cadence** rather than by the minute it lands on, because migration
