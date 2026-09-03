@@ -94,6 +94,7 @@ restores snapshots, and drops you into a shell with restic already configured.`,
 		newExecCommand(f),
 		newRenderCommand(f),
 		newValidateCommand(f),
+		newMigrateCommand(f),
 		newParityCommand(f),
 		newVersionCommand(f),
 	}

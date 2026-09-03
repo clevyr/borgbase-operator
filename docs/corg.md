@@ -17,7 +17,7 @@ Every command below is marked. It is the first thing to check at 3am.
 | --- | --- |
 | `reads` | Changes nothing. Safe against production while you think. |
 | `writes` | Alters Kubernetes objects — a schedule, an annotation, a Job. Reversible. |
-| `DESTROYS` | Overwrites or deletes what is being protected. Asks you to type the resource name. |
+| `DESTROYS` | Overwrites or deletes what is being protected. Asks you to type the resource name, and refuses outright with no terminal unless `--yes` is passed. |
 
 ## Naming what you mean
 
@@ -155,7 +155,8 @@ fails waiting on it. Removes only what restic considers stale.
 
 | Flag | |
 | --- | --- |
-| `--remove-all` | **`DESTROYS`** Every lock, stale or not. Only safe when nothing is running |
+| `--remove-all` | **`DESTROYS`** Every lock, stale or not. Only safe when nothing is running. Confirms first |
+| `--yes` | Skip the confirmation |
 
 ### `check <name>` — `reads`
 
@@ -174,7 +175,8 @@ repository.
 
 | Flag | |
 | --- | --- |
-| `--dry-run` | What would be removed |
+| `--dry-run` | What would be removed. Skips the confirmation |
+| `--yes` | Skip the confirmation |
 
 ### `stats <name>` — `reads`
 
@@ -287,10 +289,29 @@ a re-jittered minute does not.
 | `CADENCE DIFFERS` | 1 | It no longer runs as often |
 | `TIMEZONE DIFFERS` | 1 | |
 
-Migration itself is still a script: `hack/migrate.sh <resources/restic>` emits
-the Repository and ScheduledBackup for an existing app. It reads SOPS-encrypted
-secrets through `sops` and `yq`, so porting it into the binary would shell out
-to the same tools for no gain.
+### `migrate <resources/restic directory>` — `reads`
+
+Converts an app's hand-written backup into operator resources, printed to
+stdout. Nothing is applied and nothing in fleet-infra is modified.
+
+The resources are marshalled from the real API types, so the output cannot be
+shaped in a way the CRDs would reject.
+
+| Flag | |
+| --- | --- |
+| `--repository-id` | Use this ID instead of decrypting `secret.yaml` |
+
+The BorgBase repository ID exists only inside the encrypted
+`RESTIC_REPOSITORY` value, so by default `migrate` runs `sops` to read it —
+that is where the cloud credentials for it live, and linking the sops library
+instead would add every KMS backend it supports (61MB on a 93MB binary) to read
+one field once per app. `--repository-id` skips that path entirely. Everything
+else is parsed and emitted in Go.
+
+Before applying, reduce the app's `secret.yaml` to just `RESTIC_PASSWORD`:
+`RESTIC_REPOSITORY` is synthesized by the operator and `CHECK_UUID` is replaced
+by healthchecks slug pinging. Do not remove `RESTIC_PASSWORD` — it is the only
+off-cluster copy of the key that decrypts these backups.
 
 ## Recipes
 
@@ -340,7 +361,7 @@ corg resume web-files
 **Migrate an app onto the operator**
 
 ```sh
-hack/migrate.sh apps/snipe-it/resources/restic
+corg migrate apps/snipe-it/resources/restic > generated.yaml
 corg validate generated.yaml
 corg parity generated.yaml helmrelease.yaml
 ```

@@ -65,11 +65,6 @@ spec:
 
 func parity(t *testing.T, generated, original string) (string, error) {
 	t.Helper()
-	if _, err := os.Stat("/usr/bin/yq"); err != nil {
-		if _, err := os.Stat("/usr/local/bin/yq"); err != nil {
-			t.Skip("yq is not installed")
-		}
-	}
 	var buf bytes.Buffer
 	err := runParity(&buf, writeGenerated(t, generated), writeHelmRelease(t, original))
 	return buf.String(), err

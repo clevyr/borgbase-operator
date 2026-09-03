@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 
@@ -294,34 +293,28 @@ func renderedPlan(path string) (plan, error) {
 }
 
 // originalPlan pulls the shell body, schedule and time zone out of the
-// HelmRelease. The script is the last element of the runitor invocation.
+// HelmRelease.
 func originalPlan(path string) (plan, error) {
-	script, err := yq(path, ".spec.values.controllers.restic.containers.restic.command[-1]")
+	hr, err := readHelmRelease(path)
 	if err != nil {
 		return plan{}, err
 	}
-	schedule, err := yq(path, ".spec.values.controllers.restic.cronjob.schedule")
+	controller, container, err := hr.backupController()
 	if err != nil {
-		return plan{}, err
+		return plan{}, fmt.Errorf("%s: %w", path, err)
 	}
-	tz, err := yq(path, `.spec.values.controllers.restic.cronjob.timeZone // ""`)
+	script, err := container.script()
 	if err != nil {
-		return plan{}, err
+		return plan{}, fmt.Errorf("%s: %w", path, err)
 	}
+
+	tz := controller.CronJob.TimeZone
 	if tz == "" {
 		// An unset time zone in the HelmRelease means the cluster's, which for
 		// this fleet is what the CRD defaults to.
 		tz = defaultTimeZone
 	}
-	return plan{script: script, schedule: schedule, timeZone: tz}, nil
-}
-
-func yq(path, expr string) (string, error) {
-	out, err := exec.Command("yq", "-r", expr, path).Output()
-	if err != nil {
-		return "", fmt.Errorf("running yq %q: %w", expr, err)
-	}
-	return strings.TrimRight(string(out), "\n"), nil
+	return plan{script: script, schedule: controller.CronJob.Schedule, timeZone: tz}, nil
 }
 
 // normalizeScript ignores differences that cannot change what gets backed up:

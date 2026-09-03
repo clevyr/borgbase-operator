@@ -148,13 +148,13 @@ the spec says nothing about is left alone.
 
 ## Migrating an existing backup
 
-`hack/migrate.sh` reads an app's hand-written `resources/restic` directory,
+`corg migrate` reads an app's hand-written `resources/restic` directory,
 decrypts its secret to recover the BorgBase repository ID, and emits the two
 resources with the current retention and sources pinned verbatim, and the
 schedule handed back to the operator (see below).
 
 ```sh
-hack/migrate.sh ../fleet-infra/apps/fennec/myapp/prod/resources/restic > generated.yaml
+corg migrate ../fleet-infra/apps/fennec/myapp/prod/resources/restic > generated.yaml
 corg parity generated.yaml ../fleet-infra/apps/fennec/myapp/prod/resources/restic/helmrelease.yaml
 ```
 
@@ -176,7 +176,7 @@ silently change what gets backed up, or how often.
 
 The hand-written schedules are hand-jittered: someone picked a minute to keep
 apps off the top of the hour, and copy-paste meant several apps ended up
-sharing one anyway. `migrate.sh` converts them to the equivalent shorthand, so
+sharing one anyway. `corg migrate` converts them to the equivalent shorthand, so
 the operator derives the offset from a hash of the resource and the spread is
 maintained without anyone maintaining it.
 

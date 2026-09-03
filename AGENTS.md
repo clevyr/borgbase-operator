@@ -16,13 +16,12 @@ internal/backup/               Rendering: CronJob, schedule, backup script
 internal/borgbase/             GraphQL client for the BorgBase API
 internal/healthchecks/         runitor wrapping, no API client of its own
 internal/secrets/              Restic password generation
-internal/cli/                  corg commands, including corg parity
+internal/cli/                  corg commands, including migrate and parity
 internal/cli/runner/           Ephemeral Jobs for one-off restic commands
 config/crd/bases/              Generated CRDs (DO NOT EDIT)
 config/rbac/role.yaml          Generated RBAC (DO NOT EDIT)
 config/rbac/corg_*_role.yaml   Roles for people running the CLI
 config/samples/                Example CRs, checked by make test-crd
-hack/migrate.sh                Generate resources from a hand-written backup
 PROJECT                        Kubebuilder metadata (DO NOT EDIT)
 ```
 
@@ -82,7 +81,7 @@ class, `[.]`, instead.
 
 ## Migration
 
-`hack/migrate.sh` reads an app's hand-written `resources/restic` directory and
+`corg migrate` reads an app's hand-written `resources/restic` directory and
 emits the two resources, converting a hand-jittered cron expression into the
 equivalent shorthand so the operator can jitter it instead.
 
