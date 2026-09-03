@@ -21,6 +21,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -48,6 +49,15 @@ const (
 	// initRetryDelay paces replacement of a failed init Job, and keeps its logs
 	// around for that long.
 	initRetryDelay = 5 * time.Minute
+
+	// maxConcurrentReconciles applies to both controllers.
+	//
+	// Reconciling a Repository blocks on the BorgBase API, and that API is not
+	// fast: deleting a repository has been measured at over eleven seconds. With
+	// a single worker one slow or hung call stalls every other repository behind
+	// it. controller-runtime still serialises reconciles per object, so the only
+	// thing this changes is that unrelated objects make progress independently.
+	maxConcurrentReconciles = 4
 )
 
 // RepositoryReconciler reconciles a Repository object.
@@ -677,6 +687,7 @@ func (r *RepositoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.APIReader = mgr.GetAPIReader()
 	}
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(crcontroller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		For(&borgbasev1.Repository{}, builder.WithPredicates(ignoreOwnStatusWrites())).
 		// Secrets are deliberately not owned or watched: doing so would build
 		// an informer over every Secret in the cluster. A credentials Secret
