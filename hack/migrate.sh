@@ -56,9 +56,10 @@ shorthand=$(awk '{
   if (hour ~ /^\*\/[0-9]+$/) { sub(/^\*\//, "", hour); print "@every " hour "h"; exit }
 }' <<<"$schedule")
 concurrency=$(get '.controllers.restic.cronjob.concurrencyPolicy // "Forbid"')
-# The CronJob's time zone decides what the pinned schedule actually means. The
-# CRD defaults it to America/Chicago, so an app on anything else has to carry
-# it across or every backup silently moves.
+# The CronJob's time zone decides what the schedule actually means, whether it
+# was pinned or handed back as a shorthand. The CRD defaults it to
+# America/Chicago, so an app on anything else has to carry it across or every
+# backup silently moves.
 timezone=$(get '.controllers.restic.cronjob.timeZone // ""')
 script=$(get '.controllers.restic.containers.restic.command[-1]')
 workdir=$(get '.controllers.restic.containers.restic.workingDir // ""')

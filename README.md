@@ -150,7 +150,8 @@ the spec says nothing about is left alone.
 
 `hack/migrate.sh` reads an app's hand-written `resources/restic` directory,
 decrypts its secret to recover the BorgBase repository ID, and emits the two
-resources with the current schedule, retention and sources pinned verbatim.
+resources with the current retention and sources pinned verbatim, and the
+schedule handed back to the operator (see below).
 
 ```sh
 hack/migrate.sh ../fleet-infra/apps/fennec/myapp/prod/resources/restic > generated.yaml
