@@ -157,10 +157,43 @@ hack/migrate.sh ../fleet-infra/apps/fennec/myapp/prod/resources/restic > generat
 go run ./hack/parity generated.yaml ../fleet-infra/apps/fennec/myapp/prod/resources/restic/helmrelease.yaml
 ```
 
-`hack/parity` renders the generated resource and compares the resulting script
-against the original, ignoring only the optional quoting around `--exclude`
-patterns. Run it for every app before cutting it over: migrating must not
-silently change what gets backed up.
+```
+RESCHEDULED: "20 0 * * *" -> "33 20 * * *" (every 24h0m0s either way; the operator jittered it)
+EQUIVALENT
+```
+
+`hack/parity` renders the generated resource and compares it against the
+original. The script must match, ignoring only the optional quoting around
+`--exclude` patterns and the `--retry-lock` flag. The schedule is compared by
+**cadence** rather than by the minute it lands on, because migration
+deliberately moves the time; see below. It prints `IDENTICAL` when nothing
+moved, `EQUIVALENT` when only the schedule was re-jittered, and fails on
+anything else. Run it for every app before cutting it over: migrating must not
+silently change what gets backed up, or how often.
+
+### Schedules are handed back to the operator
+
+The hand-written schedules are hand-jittered: someone picked a minute to keep
+apps off the top of the hour, and copy-paste meant several apps ended up
+sharing one anyway. `migrate.sh` converts them to the equivalent shorthand, so
+the operator derives the offset from a hash of the resource and the spread is
+maintained without anyone maintaining it.
+
+| Hand-written | Migrated to |
+| --- | --- |
+| `36 * * * *` | `@hourly` |
+| `20 0 * * *` | `@daily` |
+| `27 */6 * * *` | `@every 6h` |
+
+Anything that does not map exactly, such as a specific weekday, is pinned
+verbatim and left alone.
+
+This moves when a backup runs, which is the point, but note two things on
+cutover day. A backup whose new slot has already passed will wait until the
+next one, so a daily backup can go up to a day longer than usual before its
+first run under the operator. If its healthchecks check was auto-created with
+the default one-day period and one-hour grace, that can trip a late alarm once.
+Neither loses data; both are worth expecting rather than being surprised by.
 
 Keep the existing SOPS secret, reduced to `RESTIC_PASSWORD`. The operator reads
 it as a seed and never writes to it, so it stays the off-cluster copy of the key

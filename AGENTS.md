@@ -80,11 +80,17 @@ class, `[.]`, instead.
 ## Migration
 
 `hack/migrate.sh` reads an app's hand-written `resources/restic` directory and
-emits the two resources. `hack/parity` then compares the generated script,
-schedule and time zone against the original. Migrating must not silently change
-what gets backed up or when, so any change to `internal/backup/script.go` or
-`schedule.go` has to keep parity meaningful: it normalises away only the
-quoting around `--exclude` patterns and the `--retry-lock` flag.
+emits the two resources, converting a hand-jittered cron expression into the
+equivalent shorthand so the operator can jitter it instead.
+
+`hack/parity` then compares the generated script, schedule and time zone
+against the original. Migrating must not silently change what gets backed up or
+how often, so any change to `internal/backup/script.go` or `schedule.go` has to
+keep parity meaningful. It normalises away only the quoting around `--exclude`
+patterns and the `--retry-lock` flag, and compares the schedule by **cadence**,
+expanding both expressions over 28 days and comparing how often they fire.
+Comparing schedules verbatim would report a difference for every app, since
+migration moves the time on purpose, and hide the ones that matter.
 
 ## Logging
 

@@ -39,6 +39,22 @@ values=$(yq -r '.spec.values' "$hr")
 get() { printf '%s' "$values" | yq -r "$1"; }
 
 schedule=$(get '.controllers.restic.cronjob.schedule')
+
+# The hand-written schedules are hand-jittered: someone picked a minute to keep
+# apps off the top of the hour, and copy-paste means several apps ended up
+# sharing one. Hand them back to the operator as a cadence, which it jitters
+# from a hash of the resource, so the spread is maintained without anyone
+# maintaining it. Only the shapes that map exactly are converted; anything else
+# is pinned verbatim, since a schedule nobody can read is not worth guessing at.
+shorthand=$(awk '{
+  if (NF != 5) exit
+  minute = $1; hour = $2
+  if ($3 != "*" || $4 != "*" || $5 != "*") exit
+  if (minute !~ /^[0-9]+$/) exit
+  if (hour == "*") { print "@hourly"; exit }
+  if (hour ~ /^[0-9]+$/) { print "@daily"; exit }
+  if (hour ~ /^\*\/[0-9]+$/) { sub(/^\*\//, "", hour); print "@every " hour "h"; exit }
+}' <<<"$schedule")
 concurrency=$(get '.controllers.restic.cronjob.concurrencyPolicy // "Forbid"')
 # The CronJob's time zone decides what the pinned schedule actually means. The
 # CRD defaults it to America/Chicago, so an app on anything else has to carry
@@ -127,9 +143,15 @@ metadata:
 spec:
   repositoryRef:
     name: restic
-  # Pinned verbatim from the HelmRelease. Switching to "@hourly" for
-  # auto-jitter is a deliberate follow-up, not part of the migration.
-  schedule: "$schedule"
+$(if [[ -n $shorthand ]]; then
+  printf '  # Was "%s" in the HelmRelease, hand-jittered. The operator derives\n' "$schedule"
+  printf '  # its own minute from a hash of this resource, so the spread is kept\n'
+  printf '  # without anyone maintaining it. Check status.effectiveSchedule.\n'
+  printf '  schedule: "%s"' "$shorthand"
+else
+  printf '  # Pinned verbatim: this schedule has no shorthand equivalent.\n'
+  printf '  schedule: "%s"' "$schedule"
+fi)
   concurrencyPolicy: $concurrency
   sources:
 $(emit_sources)
