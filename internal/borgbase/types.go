@@ -24,9 +24,9 @@ var (
 	// format cannot be changed after creation, this is terminal.
 	ErrNotRestic = errors.New("borgbase: repository is not restic format")
 
-	// ErrNoCredentials means the API returned a repository with no vgerToken,
+	// ErrNoCredentials means the API returned a repository with no htpasswd,
 	// so no RESTIC_REPOSITORY URL can be built for it.
-	ErrNoCredentials = errors.New("borgbase: repository has no vgerToken")
+	ErrNoCredentials = errors.New("borgbase: repository has no REST password")
 )
 
 // Repo mirrors the fields of BorgBase's RepoType that this operator reads.
@@ -42,8 +42,8 @@ type Repo struct {
 	AppendOnly   bool    `json:"appendOnly"`
 	CurrentUsage float64 `json:"currentUsage"`
 
-	// VgerToken is the REST-server password used in the repository URL.
-	VgerToken string `json:"vgerToken"`
+	// Htpasswd is the REST-server password.
+	Htpasswd string `json:"htpasswd"`
 
 	Server Server `json:"server"`
 }
@@ -58,7 +58,7 @@ type Server struct {
 func (r *Repo) IsRestic() bool { return r.Format == FormatRestic }
 
 // Password returns the REST-server password used in the repository URL.
-func (r *Repo) Password() string { return r.VgerToken }
+func (r *Repo) Password() string { return r.Htpasswd }
 
 // Host returns the hostname serving this repository over REST.
 //

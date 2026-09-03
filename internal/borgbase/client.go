@@ -59,7 +59,7 @@ const repoFields = `
 	alertDays
 	appendOnly
 	currentUsage
-	vgerToken
+	htpasswd
 	server { hostname region }
 `
 

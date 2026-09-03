@@ -125,7 +125,7 @@ func TestPasswordIsGeneratedOnceAndNeverRotated(t *testing.T) {
 func TestAdoptionNeverCreates(t *testing.T) {
 	api := newFakeAPI(&borgbase.Repo{
 		ID: "a1b2c3d4", Name: testNS, Format: borgbase.FormatRestic,
-		VgerToken: "secret-token", CurrentUsage: 3.2,
+		Htpasswd: "secret-token", CurrentUsage: 3.2,
 	})
 	repo := repositoryFixture(func(r *borgbasev1.Repository) {
 		r.Spec.ExistingRepositoryID = "a1b2c3d4"
@@ -173,7 +173,7 @@ func TestAdoptionNeverCreates(t *testing.T) {
 func TestRefusesToInventPasswordForNonEmptyRepository(t *testing.T) {
 	api := newFakeAPI(&borgbase.Repo{
 		ID: "abc12345", Name: testNS, Format: borgbase.FormatRestic,
-		VgerToken: "t", CurrentUsage: 12.5,
+		Htpasswd: "t", CurrentUsage: 12.5,
 	})
 	repo := repositoryFixture(func(r *borgbasev1.Repository) {
 		r.Status.RepositoryID = "abc12345"
@@ -191,7 +191,7 @@ func TestRefusesToInventPasswordForNonEmptyRepository(t *testing.T) {
 // format at creation. It must be a hard failure, not a silently broken URL.
 func TestRejectsNonResticRepository(t *testing.T) {
 	api := newFakeAPI(&borgbase.Repo{
-		ID: "borgrepo", Name: "myapp-prod", Format: "borg", VgerToken: "t",
+		ID: "borgrepo", Name: "myapp-prod", Format: "borg", Htpasswd: "t",
 	})
 	repo := repositoryFixture(func(r *borgbasev1.Repository) {
 		r.Spec.ExistingRepositoryID = "borgrepo"

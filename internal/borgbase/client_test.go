@@ -55,7 +55,7 @@ func TestGetSendsBearerTokenAndParsesRepo(t *testing.T) {
 		"id":"a1b2c3d4","name":"myapp-prod","region":"us","format":"restic",
 		"repoPath":"a1b2c3d4@a1b2c3d4.repo.borgbase.com:repo",
 		"quota":100,"quotaEnabled":true,"alertDays":3,"appendOnly":false,
-		"currentUsage":3.25,"vgerToken":"vger-secret",
+		"currentUsage":3.25,"htpasswd":"rest-secret",
 		"server":{"hostname":"box-us00.borgbase.com","region":"us"}}}}`}
 	c, done := s.server(t)
 	defer done()
@@ -75,7 +75,7 @@ func TestGetSendsBearerTokenAndParsesRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResticURL() error = %v", err)
 	}
-	want := "rest:https://a1b2c3d4:vger-secret@a1b2c3d4.repo.borgbase.com"
+	want := "rest:https://a1b2c3d4:rest-secret@a1b2c3d4.repo.borgbase.com"
 	if url != want {
 		t.Errorf("ResticURL() = %q, want %q", url, want)
 	}
@@ -108,7 +108,7 @@ func TestGetNullRepoIsNotFound(t *testing.T) {
 func TestAddAlwaysRequestsResticFormat(t *testing.T) {
 	s := &stub{response: `{"data":{"repoAdd":{"repoAdded":{
 		"id":"new12345","name":"myapp-prod","region":"us","format":"restic",
-		"vgerToken":"t","server":{"hostname":"new12345.repo.borgbase.com"}}}}}`}
+		"htpasswd":"t","server":{"hostname":"new12345.repo.borgbase.com"}}}}}`}
 	c, done := s.server(t)
 	defer done()
 
@@ -130,7 +130,7 @@ func TestAddAlwaysRequestsResticFormat(t *testing.T) {
 
 func TestAddOmitsQuotaWhenUnset(t *testing.T) {
 	s := &stub{response: `{"data":{"repoAdd":{"repoAdded":{
-		"id":"new12345","format":"restic","vgerToken":"t","server":{"hostname":"h"}}}}}`}
+		"id":"new12345","format":"restic","htpasswd":"t","server":{"hostname":"h"}}}}}`}
 	c, done := s.server(t)
 	defer done()
 
@@ -149,7 +149,7 @@ func TestAddOmitsQuotaWhenUnset(t *testing.T) {
 // repoEdit has no format argument, so sending one would be an API error.
 func TestEditNeverSendsFormat(t *testing.T) {
 	s := &stub{response: `{"data":{"repoEdit":{"repoEdited":{
-		"id":"a1b2c3d4","format":"restic","vgerToken":"t","server":{"hostname":"h"}}}}}`}
+		"id":"a1b2c3d4","format":"restic","htpasswd":"t","server":{"hostname":"h"}}}}}`}
 	c, done := s.server(t)
 	defer done()
 
@@ -202,17 +202,24 @@ func TestResticURLRejectsUnusableRepos(t *testing.T) {
 	}
 }
 
-func TestPasswordIsTheVgerToken(t *testing.T) {
-	if got := (&Repo{VgerToken: "v"}).Password(); got != "v" {
-		t.Errorf("Password() = %q, want the vger token", got)
+func TestPasswordIsTheHtpasswd(t *testing.T) {
+	if got := (&Repo{Htpasswd: "h"}).Password(); got != "h" {
+		t.Errorf("Password() = %q, want the htpasswd", got)
 	}
+
+	url, err := (&Repo{ID: "abc123", Format: FormatRestic, Htpasswd: "h"}).ResticURL()
+	if err != nil {
+		t.Fatalf("ResticURL() error = %v", err)
+	}
+	if want := "rest:https://abc123:h@abc123.repo.borgbase.com"; url != want {
+		t.Errorf("ResticURL() = %q, want %q", url, want)
+	}
+
 	if _, err := (&Repo{ID: "x", Format: FormatRestic}).ResticURL(); !errors.Is(err, ErrNoCredentials) {
-		t.Error("a repository with no vgerToken must not yield a URL")
+		t.Error("a repository with no password must not yield a URL")
 	}
 }
 
-// Server.Hostname is the physical box the repository is stored on and does not
-// serve its REST endpoint, so it must never leak into the connection URL.
 func TestHostAlwaysUsesTheRepoSubdomain(t *testing.T) {
 	bare := &Repo{ID: "abc123"}
 	if got := bare.Host(); got != bare.ID+".repo.borgbase.com" {
@@ -220,7 +227,7 @@ func TestHostAlwaysUsesTheRepoSubdomain(t *testing.T) {
 	}
 
 	onBox := &Repo{
-		ID: "e5f6a7b8", Format: FormatRestic, VgerToken: "tok",
+		ID: "e5f6a7b8", Format: FormatRestic, Htpasswd: "tok",
 		Server: Server{Hostname: "box-us00.borgbase.com"},
 	}
 	if got := onBox.Host(); got != onBox.ID+".repo.borgbase.com" {

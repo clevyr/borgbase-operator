@@ -74,11 +74,11 @@ func (f *fakeAPI) Add(_ context.Context, opts borgbase.AddOptions) (*borgbase.Re
 	defer f.mu.Unlock()
 	id := fmt.Sprintf("new%04d", len(f.repos))
 	r := &borgbase.Repo{
-		ID:        id,
-		Name:      opts.Name,
-		Region:    opts.Region,
-		Format:    borgbase.FormatRestic,
-		VgerToken: "token-" + id,
+		ID:       id,
+		Name:     opts.Name,
+		Region:   opts.Region,
+		Format:   borgbase.FormatRestic,
+		Htpasswd: "token-" + id,
 	}
 	f.repos[id] = r
 	return r, nil
