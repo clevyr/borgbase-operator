@@ -209,25 +209,50 @@ func runParity(out io.Writer, generatedPath, helmReleasePath string) error {
 	}
 
 	p := newPrinter(out)
-	var differences []string
+	var differences, notes []string
 
 	scriptDiffers := normalizeScript(rendered.script) != normalizeScript(original.script)
 	if scriptDiffers {
 		differences = append(differences, "SCRIPT DIFFERS")
 	}
-	// A schedule that shifts moves every backup and quietly changes what the
-	// retention tiers mean, so it is compared as carefully as the script.
-	if rendered.schedule != original.schedule {
-		differences = append(differences, fmt.Sprintf(
-			"SCHEDULE DIFFERS: original %q, generated %q", original.schedule, rendered.schedule))
+
+	// The schedule is compared by cadence, not by the minute it lands on.
+	// Migration hands a hand-jittered expression back to the operator as a
+	// shorthand, which deliberately moves the time; what must not change is how
+	// often the backup runs, since that is what the retention tiers assume.
+	renderedCadence, err := cadenceOf(rendered.schedule)
+	if err != nil {
+		return fmt.Errorf("reading the generated schedule: %w", err)
 	}
+	originalCadence, err := cadenceOf(original.schedule)
+	if err != nil {
+		return fmt.Errorf("reading the original schedule: %w", err)
+	}
+	switch {
+	case !renderedCadence.equal(originalCadence):
+		differences = append(differences, fmt.Sprintf(
+			"CADENCE DIFFERS: original %q runs %s, generated %q runs %s",
+			original.schedule, originalCadence, rendered.schedule, renderedCadence))
+	case rendered.schedule != original.schedule:
+		notes = append(notes, fmt.Sprintf(
+			"RESCHEDULED: %q -> %q (%s either way; the operator jittered it)",
+			original.schedule, rendered.schedule, renderedCadence))
+	}
+
 	if rendered.timeZone != original.timeZone {
 		differences = append(differences, fmt.Sprintf(
 			"TIMEZONE DIFFERS: original %q, generated %q", original.timeZone, rendered.timeZone))
 	}
 
+	for _, n := range notes {
+		p.println(n)
+	}
 	if len(differences) == 0 {
-		p.println("IDENTICAL")
+		if len(notes) == 0 {
+			p.println("IDENTICAL")
+		} else {
+			p.println("EQUIVALENT")
+		}
 		return p.Err()
 	}
 

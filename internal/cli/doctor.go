@@ -350,7 +350,12 @@ func checkLastRun(sb *borgbasev1.ScheduledBackup, r *report) {
 
 	switch {
 	case st.LastScheduleTime == nil:
-		r.add(levelWarn, "no backup has been scheduled yet")
+		// A backup that has never fired is not a missed one. After a migration
+		// the operator re-jitters the schedule, so the first run waits for the
+		// next slot -- up to a day away for a daily backup.
+		r.add(levelWarn, "no backup has run yet",
+			"The first run happens at the next scheduled slot.",
+			"To take one now: corg backup "+sb.Name)
 	case st.LastSuccessfulTime == nil:
 		r.add(levelFail, fmt.Sprintf("a backup started %s but none has ever succeeded", Since(st.LastScheduleTime)),
 			"Run: corg logs "+sb.Name)
