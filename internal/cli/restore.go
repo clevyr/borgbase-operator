@@ -1,19 +1,16 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	borgbasev1 "github.com/clevyr/borgbase-operator/api/v1"
-	"github.com/clevyr/borgbase-operator/internal/cli/kube"
 )
 
 var (
@@ -161,8 +158,7 @@ func availableTargets(sb *borgbasev1.ScheduledBackup) []string {
 func chooseTarget(f *Factory, sb *borgbasev1.ScheduledBackup, o *restoreOptions) error {
 	targets := availableTargets(sb)
 
-	stdin, ok := f.Streams.In.(*os.File)
-	if !ok || !kube.IsTerminal(stdin.Fd()) {
+	if !f.Interactive() {
 		p := newPrinter(f.Streams.ErrOut)
 		p.printf("scheduledbackup/%s can restore to:\n", sb.Name)
 		for _, t := range targets {
@@ -184,7 +180,7 @@ func chooseTarget(f *Factory, sb *borgbasev1.ScheduledBackup, o *restoreOptions)
 		return err
 	}
 
-	line, err := bufio.NewReader(f.Streams.In).ReadString('\n')
+	line, err := f.Stdin().ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
@@ -209,9 +205,18 @@ func chooseTarget(f *Factory, sb *borgbasev1.ScheduledBackup, o *restoreOptions)
 }
 
 // confirm requires the resource name to be typed before overwriting live data.
-func confirm(f *Factory, o *restoreOptions, what, name string) error {
-	if o.yes || o.dryRun {
+//
+// Without a terminal there is nobody to ask, so it refuses rather than
+// proceeding. The error names --yes, because "not confirmed" on a machine that
+// was never prompted is a confusing thing to read in CI.
+func confirm(f *Factory, skip bool, what, name string) error {
+	if skip {
 		return nil
+	}
+	if !f.Interactive() {
+		return fmt.Errorf(
+			"%w: this overwrites %s, and there is no terminal to confirm on; pass --yes to proceed",
+			ErrNotConfirmed, what)
 	}
 
 	p := newPrinter(f.Streams.ErrOut)
@@ -221,12 +226,12 @@ func confirm(f *Factory, o *restoreOptions, what, name string) error {
 		return err
 	}
 
-	line, err := bufio.NewReader(f.Streams.In).ReadString('\n')
+	line, err := f.Stdin().ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
 	if strings.TrimSpace(line) != name {
-		return ErrNotConfirmed
+		return fmt.Errorf("%w: %s was not changed", ErrNotConfirmed, what)
 	}
 	return nil
 }

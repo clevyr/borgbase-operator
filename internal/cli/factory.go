@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bufio"
+	"os"
 	"sync"
 
 	"github.com/spf13/cobra"
@@ -15,6 +17,8 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/clevyr/borgbase-operator/internal/cli/kube"
+
 	borgbasev1 "github.com/clevyr/borgbase-operator/api/v1"
 )
 
@@ -26,6 +30,12 @@ type Factory struct {
 
 	// allNamespaces is bound to -A by the root command.
 	allNamespaces bool
+
+	stdinOnce sync.Once
+	stdin     *bufio.Reader
+
+	// interactive overrides terminal detection in tests.
+	interactive *bool
 
 	once struct {
 		scheme     sync.Once
@@ -120,4 +130,24 @@ func (f *Factory) AllNamespaces() bool { return f.allNamespaces }
 func (f *Factory) AddAllNamespacesFlag(cmd *cobra.Command) {
 	cmd.Flags().BoolVarP(&f.allNamespaces, "all-namespaces", "A", false,
 		"List the requested objects across all namespaces")
+}
+
+// Stdin is a single buffered reader over the input stream.
+//
+// Every prompt must share it. A second bufio.Reader over the same stream would
+// start with an empty buffer while the first still holds bytes the user has
+// already typed, so a confirmation following a prompt could silently read
+// nothing.
+func (f *Factory) Stdin() *bufio.Reader {
+	f.stdinOnce.Do(func() { f.stdin = bufio.NewReader(f.Streams.In) })
+	return f.stdin
+}
+
+// Interactive reports whether input is a terminal, so a prompt is possible.
+func (f *Factory) Interactive() bool {
+	if f.interactive != nil {
+		return *f.interactive
+	}
+	file, ok := f.Streams.In.(*os.File)
+	return ok && kube.IsTerminal(file.Fd())
 }

@@ -15,7 +15,7 @@ import (
 var ErrAppendOnly = errors.New("repository is append-only")
 
 func newUnlockCommand(f *Factory) *cobra.Command {
-	var removeAll bool
+	var removeAll, yes bool
 
 	cmd := &cobra.Command{
 		Use:     "unlock <name>",
@@ -30,6 +30,12 @@ Only locks restic considers stale are removed. Use --remove-all to remove them
 all, which is safe only when nothing is running.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Removing a live lock while a backup holds it corrupts that run.
+			if removeAll {
+				if err := confirm(f, yes, "every lock on the repository, including live ones", args[0]); err != nil {
+					return err
+				}
+			}
 			return runRestic(cmd.Context(), f, args[0], "unlock",
 				func(*borgbasev1.ScheduledBackup, *borgbasev1.Repository) ([]string, error) {
 					argv := []string{"unlock"}
@@ -44,6 +50,7 @@ all, which is safe only when nothing is running.`,
 
 	cmd.Flags().BoolVar(&removeAll, "remove-all", false,
 		"Remove every lock, not only stale ones. Only safe when no backup is running")
+	cmd.Flags().BoolVar(&yes, "yes", false, "Skip the confirmation prompt")
 	return cmd
 }
 
@@ -79,7 +86,7 @@ but costs a full download of that share.`,
 }
 
 func newPruneCommand(f *Factory) *cobra.Command {
-	var dryRun bool
+	var dryRun, yes bool
 
 	cmd := &cobra.Command{
 		Use:     "prune <name>",
@@ -91,6 +98,12 @@ Backups already prune themselves after each run, so this is for reclaiming
 space after a retention change rather than routine upkeep.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// forget --prune deletes snapshots; there is no undo.
+			if !dryRun {
+				if err := confirm(f, yes, "snapshots outside the retention policy, permanently", args[0]); err != nil {
+					return err
+				}
+			}
 			return runRestic(cmd.Context(), f, args[0], "prune",
 				func(sb *borgbasev1.ScheduledBackup, repo *borgbasev1.Repository) ([]string, error) {
 					// restic cannot delete from an append-only repository, so
@@ -119,6 +132,7 @@ space after a retention change rather than routine upkeep.`,
 	}
 
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Report what would be removed without removing it")
+	cmd.Flags().BoolVar(&yes, "yes", false, "Skip the confirmation prompt")
 	return cmd
 }
 

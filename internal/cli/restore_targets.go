@@ -241,7 +241,7 @@ func restoreInPlace(
 	}
 
 	claim := sb.Spec.Volume.ExistingClaim
-	if err := confirm(f, o, fmt.Sprintf("pvc/%s in namespace %s", claim, sb.Namespace), sb.Name); err != nil {
+	if err := confirm(f, o.yes || o.dryRun, fmt.Sprintf("pvc/%s in namespace %s", claim, sb.Namespace), sb.Name); err != nil {
 		return err
 	}
 
@@ -322,7 +322,7 @@ func restoreToDatabase(
 	if db.Host == "" {
 		target = fmt.Sprintf("the %s database", db.Engine)
 	}
-	if err := confirm(f, o, target, sb.Name); err != nil {
+	if err := confirm(f, o.yes || o.dryRun, target, sb.Name); err != nil {
 		return err
 	}
 

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -13,6 +14,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/utils/ptr"
 
 	borgbasev1 "github.com/clevyr/borgbase-operator/api/v1"
 )
@@ -101,24 +103,59 @@ func TestRestoreRejectsMissingSources(t *testing.T) {
 }
 
 func TestConfirmRequiresTheExactName(t *testing.T) {
+	// A pipe is not a terminal, so these exercise the non-interactive refusal
+	// separately below; here the reader stands in for typed input.
 	f := &Factory{Streams: testStreams()}
 	f.Streams.In = strings.NewReader("wrong-name\n")
-	if err := confirm(f, &restoreOptions{}, "pvc/app-data", testBackupName); !errors.Is(err, ErrNotConfirmed) {
+	f.stdinOnce.Do(func() { f.stdin = bufio.NewReader(f.Streams.In) })
+	f.interactive = ptr.To(true)
+	if err := confirm(f, false, "pvc/app-data", testBackupName); !errors.Is(err, ErrNotConfirmed) {
 		t.Errorf("expected ErrNotConfirmed, got %v", err)
 	}
 
+	f = &Factory{Streams: testStreams()}
 	f.Streams.In = strings.NewReader(testBackupName + "\n")
-	if err := confirm(f, &restoreOptions{}, "pvc/app-data", testBackupName); err != nil {
+	f.stdinOnce.Do(func() { f.stdin = bufio.NewReader(f.Streams.In) })
+	f.interactive = ptr.To(true)
+	if err := confirm(f, false, "pvc/app-data", testBackupName); err != nil {
 		t.Errorf("the exact name should confirm, got %v", err)
 	}
 
-	// --yes and --dry-run skip the prompt.
-	f.Streams.In = strings.NewReader("")
-	if err := confirm(f, &restoreOptions{yes: true}, "x", "y"); err != nil {
-		t.Errorf("--yes should skip confirmation, got %v", err)
+	if err := confirm(&Factory{Streams: testStreams()}, true, "x", "y"); err != nil {
+		t.Errorf("skip should bypass confirmation, got %v", err)
 	}
-	if err := confirm(f, &restoreOptions{dryRun: true}, "x", "y"); err != nil {
-		t.Errorf("--dry-run should skip confirmation, got %v", err)
+}
+
+// In CI there is nobody to prompt, so a destructive command must refuse rather
+// than read EOF and report a confusing mismatch.
+func TestConfirmRefusesWithoutATerminal(t *testing.T) {
+	f := &Factory{Streams: testStreams()}
+	err := confirm(f, false, "pvc/app-data", testBackupName)
+	if !errors.Is(err, ErrNotConfirmed) {
+		t.Fatalf("expected ErrNotConfirmed, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "--yes") {
+		t.Errorf("the error should name --yes: %v", err)
+	}
+}
+
+// Both prompts must share one reader, or the first swallows what the second
+// needs to read.
+func TestPromptsShareOneReader(t *testing.T) {
+	f := &Factory{Streams: testStreams()}
+	f.Streams.In = strings.NewReader("1\n" + testBackupName + "\n")
+
+	first, err := f.Stdin().ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := f.Stdin().ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(first) != "1" || strings.TrimSpace(second) != testBackupName {
+		t.Errorf("reads = %q then %q; the second prompt lost its input",
+			strings.TrimSpace(first), strings.TrimSpace(second))
 	}
 }
 
