@@ -429,7 +429,8 @@ func (r *RepositoryReconciler) buildInitJob(repo *borgbasev1.Repository, name st
 			TTLSecondsAfterFinished: ptr.To(int32(3600)),
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
+					RestartPolicy:                corev1.RestartPolicyNever,
+					AutomountServiceAccountToken: ptr.To(false),
 					SecurityContext: &corev1.PodSecurityContext{
 						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},

@@ -238,6 +238,11 @@ func TestCreatesRepositoryAndInitJob(t *testing.T) {
 	if container.EnvFrom[0].SecretRef.Name != "restic-borgbase" {
 		t.Errorf("init job reads the wrong secret: %s", container.EnvFrom[0].SecretRef.Name)
 	}
+	// The Job never calls the API server, so a mounted token is needless
+	// exposure of the namespace's default ServiceAccount.
+	if automount := job.Spec.Template.Spec.AutomountServiceAccountToken; automount == nil || *automount {
+		t.Error("init job should not mount a service account token")
+	}
 }
 
 // Retain is the default precisely so that removing a Kubernetes object can
