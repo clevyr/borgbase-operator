@@ -5,7 +5,7 @@
 # Go toolchain under QEMU for any foreign architecture, which turns a one minute
 # arm64 build into a fifteen minute one. Nothing in the final stage executes, so
 # no emulation is needed anywhere.
-FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.1 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
