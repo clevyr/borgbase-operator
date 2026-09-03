@@ -56,7 +56,7 @@ func TestGetSendsBearerTokenAndParsesRepo(t *testing.T) {
 		"repoPath":"a1b2c3d4@a1b2c3d4.repo.borgbase.com:repo",
 		"quota":100,"quotaEnabled":true,"alertDays":3,"appendOnly":false,
 		"currentUsage":3.25,"vgerToken":"vger-secret","htpasswd":null,
-		"server":{"hostname":"a1b2c3d4.repo.borgbase.com","region":"us"}}}}`}
+		"server":{"hostname":"box-us00.borgbase.com","region":"us"}}}}`}
 	c, done := s.server(t)
 	defer done()
 
@@ -211,9 +211,27 @@ func TestPasswordPrefersVgerTokenThenHtpasswd(t *testing.T) {
 	}
 }
 
-func TestHostFallsBackToRepoSubdomain(t *testing.T) {
-	if got := (&Repo{ID: "abc123"}).Host(); got != "abc123.repo.borgbase.com" {
+// Server.Hostname is the physical box the repository is stored on and does not
+// serve its REST endpoint, so it must never leak into the connection URL.
+func TestHostAlwaysUsesTheRepoSubdomain(t *testing.T) {
+	bare := &Repo{ID: "abc123"}
+	if got := bare.Host(); got != bare.ID+".repo.borgbase.com" {
 		t.Errorf("Host() = %q", got)
+	}
+
+	onBox := &Repo{
+		ID: "e5f6a7b8", Format: FormatRestic, VgerToken: "tok",
+		Server: Server{Hostname: "box-us00.borgbase.com"},
+	}
+	if got := onBox.Host(); got != onBox.ID+".repo.borgbase.com" {
+		t.Errorf("Host() = %q, want the repo subdomain, not the storage box", got)
+	}
+	url, err := onBox.ResticURL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "rest:https://e5f6a7b8:tok@e5f6a7b8.repo.borgbase.com"; url != want {
+		t.Errorf("ResticURL() = %q, want %q", url, want)
 	}
 }
 

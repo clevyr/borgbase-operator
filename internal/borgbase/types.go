@@ -68,13 +68,14 @@ func (r *Repo) Password() string {
 	return r.Htpasswd
 }
 
-// Host returns the hostname serving this repository. BorgBase serves each repo
-// from a subdomain named after the repo ID; Server.Hostname is preferred when
-// the API reports one.
+// Host returns the hostname serving this repository over REST.
+//
+// BorgBase serves each restic repository from a subdomain named after the
+// repository ID. This deliberately ignores Server.Hostname, which is the
+// physical box the repository is stored on (for example box-us00.borgbase.com)
+// and does not answer for the repository's REST endpoint. Every existing
+// repository in the fleet uses the <id>.repo.borgbase.com form.
 func (r *Repo) Host() string {
-	if r.Server.Hostname != "" {
-		return r.Server.Hostname
-	}
 	return r.ID + ".repo.borgbase.com"
 }
 
