@@ -22,8 +22,8 @@ func status(t *testing.T, c client.Client, arg string) string {
 }
 
 func TestStatusBackup(t *testing.T) {
-	r := readyRepo("prod", "store")
-	sb := readyBackup("prod", "web-files", "store")
+	r := readyRepo(testNS)
+	sb := readyBackup(testBackupName, testRepoName)
 	cj := ownedCronJob(sb)
 	cj.UID = "uid-cronjob"
 
@@ -40,10 +40,10 @@ func TestStatusBackup(t *testing.T) {
 	out := status(t, newClient(t, r, sb, cj, good, bad), "sb/web-files")
 
 	for _, want := range []string{
-		"scheduledbackup/web-files",
-		"Repository", "store", "2.1 TiB / 4 TiB",
-		"Schedule", "17 2 * * *", "America/Chicago",
-		"CONDITION", "Ready", "True",
+		subjectBackup,
+		"Repository", testRepoName, testUsage + " / " + testQuota,
+		"Schedule", testSchedule, testTimeZone,
+		"CONDITION", "Ready", statusTrue,
 		"RESULT", "STARTED", "DURATION", "JOB",
 		"succeeded", "4m12s", "web-files-backup-2",
 		"failed", "18s", "web-files-backup-1",
@@ -59,10 +59,10 @@ func TestStatusBackup(t *testing.T) {
 }
 
 func TestStatusRepository(t *testing.T) {
-	out := status(t, newClient(t, readyRepo("prod", "store")), "repo/store")
+	out := status(t, newClient(t, readyRepo(testNS)), "repo/"+testRepoName)
 	for _, want := range []string{
-		"repository/store", "BorgBase ID", "abcd1234",
-		"abcd1234.repo.borgbase.com", "2.1 TiB / 4 TiB", "Initialized", "True",
+		subjectRepo, "BorgBase ID", testRepoID,
+		testServer, testUsage + " / " + testQuota, "Initialized", statusTrue,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in output:\n%s", want, out)
@@ -71,8 +71,8 @@ func TestStatusRepository(t *testing.T) {
 }
 
 func TestStatusNoRuns(t *testing.T) {
-	r := readyRepo("prod", "store")
-	sb := readyBackup("prod", "web-files", "store")
+	r := readyRepo(testNS)
+	sb := readyBackup(testBackupName, testRepoName)
 	out := status(t, newClient(t, r, sb), "sb/web-files")
 	if !strings.Contains(out, "No runs are still present") {
 		t.Errorf("expected the empty-runs notice:\n%s", out)
@@ -81,7 +81,7 @@ func TestStatusNoRuns(t *testing.T) {
 
 // A dangling repositoryRef must not stop status from rendering.
 func TestStatusToleratesMissingRepository(t *testing.T) {
-	sb := readyBackup("prod", "orphan", "gone")
+	sb := readyBackup("orphan", "gone")
 	out := status(t, newClient(t, sb), "sb/orphan")
 	if !strings.Contains(out, "unreadable") {
 		t.Errorf("expected the repository error inline:\n%s", out)
@@ -118,16 +118,16 @@ func TestRunResultAndDuration(t *testing.T) {
 }
 
 func TestUsageOf(t *testing.T) {
-	r := newRepo("prod", "store")
+	r := newRepo(testNS)
 	if got := usageOf(r); got != "<unknown>" {
 		t.Errorf("usageOf(empty) = %q", got)
 	}
-	r.Status.CurrentUsage = "2.1 TiB"
-	if got := usageOf(r); got != "2.1 TiB" {
+	r.Status.CurrentUsage = testUsage
+	if got := usageOf(r); got != testUsage {
 		t.Errorf("usageOf(no quota) = %q", got)
 	}
-	r.Status.Quota = "4 TiB"
-	if got := usageOf(r); got != "2.1 TiB / 4 TiB" {
+	r.Status.Quota = testQuota
+	if got := usageOf(r); got != testUsage+" / "+testQuota {
 		t.Errorf("usageOf(both) = %q", got)
 	}
 }

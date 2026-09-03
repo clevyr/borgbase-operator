@@ -54,27 +54,30 @@ func runStatus(ctx context.Context, c client.Client, out io.Writer, namespace, a
 		return err
 	}
 
+	p := newPrinter(out)
+
 	if target.Kind == TargetRepository {
-		writeRepositoryStatus(out, target.Repository)
-		return nil
+		writeRepositoryStatus(p, target.Repository)
+		return p.Err()
 	}
 
 	sb := target.ScheduledBackup
 	repo, repoErr := RepositoryFor(ctx, c, sb)
-	writeBackupStatus(out, sb, repo, repoErr)
+	writeBackupStatus(p, sb, repo, repoErr)
 
 	jobs, err := BackupJobs(ctx, c, sb)
 	if err != nil {
 		return err
 	}
-	writeRuns(out, jobs, limit)
-	return nil
+	writeRuns(p, jobs, limit)
+	return p.Err()
 }
 
-func writeRepositoryStatus(out io.Writer, repo *borgbasev1.Repository) {
-	fmt.Fprintf(out, "repository/%s\n\n", repo.Name)
+func writeRepositoryStatus(p *printer, repo *borgbasev1.Repository) {
+	p.printf("repository/%s\n\n", repo.Name)
 
-	w := NewTabWriter(out)
+	tw := NewTabWriter(p)
+	w := newPrinter(tw)
 	field(w, "BorgBase ID", orNone(repo.Status.RepositoryID))
 	field(w, "Server", orNone(repo.Status.Server))
 	field(w, "Usage", usageOf(repo))
@@ -83,15 +86,16 @@ func writeRepositoryStatus(out io.Writer, repo *borgbasev1.Repository) {
 	field(w, "Suspended", yesNo(repo.Spec.Suspend))
 	field(w, "Secret", orNone(repo.SecretName()))
 	field(w, "Age", Age(repo.CreationTimestamp))
-	_ = w.Flush()
+	_ = flushTable(w, tw)
 
-	writeConditions(out, repo.Status.Conditions)
+	writeConditions(p, repo.Status.Conditions)
 }
 
-func writeBackupStatus(out io.Writer, sb *borgbasev1.ScheduledBackup, repo *borgbasev1.Repository, repoErr error) {
-	fmt.Fprintf(out, "scheduledbackup/%s\n\n", sb.Name)
+func writeBackupStatus(p *printer, sb *borgbasev1.ScheduledBackup, repo *borgbasev1.Repository, repoErr error) {
+	p.printf("scheduledbackup/%s\n\n", sb.Name)
 
-	w := NewTabWriter(out)
+	tw := NewTabWriter(p)
+	w := newPrinter(tw)
 	if repoErr != nil {
 		field(w, "Repository", fmt.Sprintf("%s (unreadable: %v)", sb.Spec.RepositoryRef.Name, repoErr))
 	} else {
@@ -104,9 +108,9 @@ func writeBackupStatus(out io.Writer, sb *borgbasev1.ScheduledBackup, repo *borg
 	field(w, "Last scheduled", Since(sb.Status.LastScheduleTime))
 	field(w, "Last successful", Since(sb.Status.LastSuccessfulTime))
 	field(w, "Age", Age(sb.CreationTimestamp))
-	_ = w.Flush()
+	_ = flushTable(w, tw)
 
-	writeConditions(out, sb.Status.Conditions)
+	writeConditions(p, sb.Status.Conditions)
 }
 
 func usageOf(repo *borgbasev1.Repository) string {
@@ -123,38 +127,40 @@ func usageOf(repo *borgbasev1.Repository) string {
 	}
 }
 
-func writeConditions(out io.Writer, conds []metav1.Condition) {
+func writeConditions(p *printer, conds []metav1.Condition) {
 	if len(conds) == 0 {
 		return
 	}
-	fmt.Fprintln(out)
-	w := NewTabWriter(out)
-	fmt.Fprintln(w, "CONDITION\tSTATUS\tREASON\tMESSAGE")
+	p.println()
+	tw := NewTabWriter(p)
+	w := newPrinter(tw)
+	w.println("CONDITION\tSTATUS\tREASON\tMESSAGE")
 	for i := range conds {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+		w.printf("%s\t%s\t%s\t%s\n",
 			conds[i].Type, conds[i].Status, conds[i].Reason, orNone(conds[i].Message))
 	}
-	_ = w.Flush()
+	_ = flushTable(w, tw)
 }
 
-func writeRuns(out io.Writer, jobs []batchv1.Job, limit int) {
-	fmt.Fprintln(out)
+func writeRuns(p *printer, jobs []batchv1.Job, limit int) {
+	p.println()
 	if len(jobs) == 0 {
-		fmt.Fprintln(out, "No runs are still present in the cluster.")
+		p.println("No runs are still present in the cluster.")
 		return
 	}
 	if limit > 0 && len(jobs) > limit {
 		jobs = jobs[:limit]
 	}
 
-	w := NewTabWriter(out)
-	fmt.Fprintln(w, "RESULT\tSTARTED\tDURATION\tJOB")
+	tw := NewTabWriter(p)
+	w := newPrinter(tw)
+	w.println("RESULT\tSTARTED\tDURATION\tJOB")
 	for i := range jobs {
 		job := &jobs[i]
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+		w.printf("%s\t%s\t%s\t%s\n",
 			runResult(job), Since(job.Status.StartTime), runDuration(job), job.Name)
 	}
-	_ = w.Flush()
+	_ = flushTable(w, tw)
 }
 
 func runResult(job *batchv1.Job) string {
@@ -193,6 +199,6 @@ func runDuration(job *batchv1.Job) string {
 	return d.String()
 }
 
-func field(w io.Writer, name, value string) {
-	fmt.Fprintf(w, "  %s\t%s\n", name, value)
+func field(w *printer, name, value string) {
+	w.printf("  %s\t%s\n", name, value)
 }

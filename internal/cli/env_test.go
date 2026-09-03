@@ -18,10 +18,10 @@ func env(t *testing.T, c client.Client, arg string, show bool) (string, string, 
 }
 
 func TestEnvRedactsByDefault(t *testing.T) {
-	r := readyRepo("prod", "store")
-	c := newClient(t, r, credentialsSecret("prod", r.SecretName()))
+	r := readyRepo(testNS)
+	c := newClient(t, r, credentialsSecret(r.SecretName()))
 
-	out, errOut, err := env(t, c, "repo/store", false)
+	out, errOut, err := env(t, c, "repo/"+testRepoName, false)
 	if err != nil {
 		t.Fatalf("runEnv: %v", err)
 	}
@@ -48,10 +48,10 @@ func TestEnvRedactsByDefault(t *testing.T) {
 }
 
 func TestEnvShowPassword(t *testing.T) {
-	r := readyRepo("prod", "store")
-	c := newClient(t, r, credentialsSecret("prod", r.SecretName()))
+	r := readyRepo(testNS)
+	c := newClient(t, r, credentialsSecret(r.SecretName()))
 
-	out, _, err := env(t, c, "repo/store", true)
+	out, _, err := env(t, c, "repo/"+testRepoName, true)
 	if err != nil {
 		t.Fatalf("runEnv: %v", err)
 	}
@@ -67,11 +67,11 @@ func TestEnvShowPassword(t *testing.T) {
 
 // A ScheduledBackup resolves through to its repository's credentials.
 func TestEnvViaScheduledBackup(t *testing.T) {
-	r := readyRepo("prod", "store")
-	sb := readyBackup("prod", "web-files", "store")
-	c := newClient(t, r, sb, credentialsSecret("prod", r.SecretName()))
+	r := readyRepo(testNS)
+	sb := readyBackup(testBackupName, testRepoName)
+	c := newClient(t, r, sb, credentialsSecret(r.SecretName()))
 
-	out, _, err := env(t, c, "sb/web-files", true)
+	out, _, err := env(t, c, "sb/"+testBackupName, true)
 	if err != nil {
 		t.Fatalf("runEnv: %v", err)
 	}
@@ -81,8 +81,8 @@ func TestEnvViaScheduledBackup(t *testing.T) {
 }
 
 func TestEnvMissingSecret(t *testing.T) {
-	c := newClient(t, readyRepo("prod", "store"))
-	if _, _, err := env(t, c, "repo/store", false); !errors.Is(err, ErrTargetNotFound) {
+	c := newClient(t, readyRepo(testNS))
+	if _, _, err := env(t, c, "repo/"+testRepoName, false); !errors.Is(err, ErrTargetNotFound) {
 		t.Fatalf("expected ErrTargetNotFound, got %v", err)
 	}
 }

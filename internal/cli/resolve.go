@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -161,10 +162,5 @@ func wrapNotFound(err error, kind, namespace, name string) error {
 }
 
 func knownPrefixes() []string {
-	out := make([]string, 0, len(kindAliases))
-	for k := range kindAliases {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(kindAliases))
 }

@@ -83,12 +83,17 @@ func runEnv(
 	if !showPassword {
 		repoURL = RedactResticURL(repoURL)
 		password = redacted
-		fmt.Fprintln(errOut, "# password redacted; pass --show-password to reveal it")
+		hint := newPrinter(errOut)
+		hint.println("# password redacted; pass --show-password to reveal it")
+		if err := hint.Err(); err != nil {
+			return err
+		}
 	}
 
-	fmt.Fprintf(out, "export %s=%s\n", controller.KeyResticRepository, shellQuote(repoURL))
-	fmt.Fprintf(out, "export %s=%s\n", controller.KeyResticPassword, shellQuote(password))
-	return nil
+	p := newPrinter(out)
+	p.printf("export %s=%s\n", controller.KeyResticRepository, shellQuote(repoURL))
+	p.printf("export %s=%s\n", controller.KeyResticPassword, shellQuote(password))
+	return p.Err()
 }
 
 func credentials(ctx context.Context, c client.Client, repo *borgbasev1.Repository) (*corev1.Secret, error) {

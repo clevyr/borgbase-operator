@@ -6,17 +6,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	binaryName    = "corg"
+	pluginDisplay = "kubectl " + binaryName
+)
+
 func TestDisplayName(t *testing.T) {
 	tests := []struct {
 		argv0 string
 		want  string
 	}{
-		{"corg", "corg"},
-		{"/usr/local/bin/corg", "corg"},
-		{"./bin/corg", "corg"},
-		{"kubectl-corg", "kubectl corg"},
-		{"/home/u/.krew/bin/kubectl-corg", "kubectl corg"},
-		{"kubectl-corg.exe", "kubectl corg"},
+		{binaryName, binaryName},
+		{"/usr/local/bin/corg", binaryName},
+		{"./bin/corg", binaryName},
+		{"kubectl-corg", pluginDisplay},
+		{"/home/u/.krew/bin/kubectl-corg", pluginDisplay},
+		{"kubectl-corg.exe", pluginDisplay},
 		// kubectl accepts an underscore where a plugin name needs a dash.
 		{"kubectl-corg_thing", "kubectl corg-thing"},
 	}
@@ -30,8 +35,8 @@ func TestDisplayName(t *testing.T) {
 
 func TestRootUsesInvokedIdentity(t *testing.T) {
 	for argv0, wantUse := range map[string]string{
-		"corg":                  "corg",
-		"/usr/bin/kubectl-corg": "corg",
+		binaryName:              binaryName,
+		"/usr/bin/kubectl-corg": binaryName,
 	} {
 		cmd := New(testStreams(), argv0)
 		if cmd.Use != wantUse {
@@ -45,7 +50,7 @@ func TestRootUsesInvokedIdentity(t *testing.T) {
 
 // The connection flags must match kubectl's, or muscle memory breaks.
 func TestRootRegistersConnectionFlags(t *testing.T) {
-	cmd := New(testStreams(), "corg")
+	cmd := New(testStreams(), binaryName)
 	for _, name := range []string{"namespace", "context", "kubeconfig"} {
 		if cmd.PersistentFlags().Lookup(name) == nil {
 			t.Errorf("missing persistent flag --%s", name)
@@ -58,7 +63,7 @@ func TestRootRegistersConnectionFlags(t *testing.T) {
 
 // -A belongs on the commands that can honour it, not on every command.
 func TestAllNamespacesIsOptIn(t *testing.T) {
-	if f := New(testStreams(), "corg").PersistentFlags().ShorthandLookup("A"); f != nil {
+	if f := New(testStreams(), binaryName).PersistentFlags().ShorthandLookup("A"); f != nil {
 		t.Error("-A must not be a persistent root flag")
 	}
 

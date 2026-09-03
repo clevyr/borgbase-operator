@@ -18,11 +18,9 @@ import (
 func jobOwnedBy(name string, ownerUID types.UID, ownerKind string, startedAgo time.Duration) *batchv1.Job {
 	start := metav1.NewTime(time.Now().Add(-startedAgo))
 	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: "prod", Name: name, UID: types.UID("uid-" + name),
-			CreationTimestamp: start,
-		},
-		Status: batchv1.JobStatus{StartTime: &start},
+		Namespace: testNS, Name: name, UID: types.UID("uid-" + name),
+		CreationTimestamp: start,
+		Status:            batchv1.JobStatus{StartTime: &start},
 	}
 	job.OwnerReferences = []metav1.OwnerReference{{
 		Kind: ownerKind, Name: "owner", UID: ownerUID, Controller: ptr(true),
@@ -31,16 +29,16 @@ func jobOwnedBy(name string, ownerUID types.UID, ownerKind string, startedAgo ti
 }
 
 func jobPod(name, jobName string) *corev1.Pod {
-	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
-		Namespace: "prod", Name: name,
+	return &corev1.Pod{
+		Namespace: testNS, Name: name,
 		Labels: map[string]string{"batch.kubernetes.io/job-name": jobName},
-	}}
+	}
 }
 
 func TestBackupJobsFindsBothOwnersNewestFirst(t *testing.T) {
-	sb := readyBackup("prod", "web-files", "store")
+	sb := readyBackup(testBackupName, testRepoName)
 	cj := ownedCronJob(sb)
-	cj.UID = "uid-cronjob"
+	cj.UID = testCronJobUID
 
 	c := newClient(t, sb, cj,
 		jobOwnedBy("scheduled-old", cj.UID, "CronJob", 48*time.Hour),
@@ -56,7 +54,7 @@ func TestBackupJobsFindsBothOwnersNewestFirst(t *testing.T) {
 		t.Fatalf("BackupJobs: %v", err)
 	}
 
-	var names []string
+	names := make([]string, 0, len(jobs))
 	for i := range jobs {
 		names = append(names, jobs[i].Name)
 	}
@@ -67,7 +65,7 @@ func TestBackupJobsFindsBothOwnersNewestFirst(t *testing.T) {
 }
 
 func TestBackupJobsWithoutCronJob(t *testing.T) {
-	sb := readyBackup("prod", "web-files", "store")
+	sb := readyBackup(testBackupName, testRepoName)
 	c := newClient(t, sb, jobOwnedBy("manual", sb.UID, "ScheduledBackup", time.Minute))
 
 	jobs, err := BackupJobs(context.Background(), c, sb)
@@ -105,9 +103,9 @@ func TestSelectJob(t *testing.T) {
 }
 
 func TestRunLogsStreamsMostRecent(t *testing.T) {
-	sb := readyBackup("prod", "web-files", "store")
+	sb := readyBackup(testBackupName, testRepoName)
 	cj := ownedCronJob(sb)
-	cj.UID = "uid-cronjob"
+	cj.UID = testCronJobUID
 	c := newClient(t, sb, cj,
 		jobOwnedBy("scheduled-old", cj.UID, "CronJob", 48*time.Hour),
 		jobOwnedBy("scheduled-new", cj.UID, "CronJob", 2*time.Hour),
@@ -127,9 +125,9 @@ func TestRunLogsStreamsMostRecent(t *testing.T) {
 }
 
 func TestRunLogsNoPods(t *testing.T) {
-	sb := readyBackup("prod", "web-files", "store")
+	sb := readyBackup(testBackupName, testRepoName)
 	cj := ownedCronJob(sb)
-	cj.UID = "uid-cronjob"
+	cj.UID = testCronJobUID
 	c := newClient(t, sb, cj, jobOwnedBy("scheduled", cj.UID, "CronJob", time.Hour))
 
 	var buf bytes.Buffer
@@ -144,14 +142,14 @@ func TestRunLogsNoPods(t *testing.T) {
 }
 
 func TestRunLogsNoRuns(t *testing.T) {
-	sb := readyBackup("prod", "web-files", "store")
+	sb := readyBackup(testBackupName, testRepoName)
 	var buf bytes.Buffer
 	err := runLogs(context.Background(), newClient(t, sb), fakeclientset.NewSimpleClientset(), &buf,
 		sb, false, corev1.PodLogOptions{})
 	if !errors.Is(err, ErrNoRuns) {
 		t.Fatalf("expected ErrNoRuns, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "scheduledbackup/web-files") {
+	if !strings.Contains(err.Error(), subjectBackup) {
 		t.Errorf("error should name the backup: %v", err)
 	}
 }

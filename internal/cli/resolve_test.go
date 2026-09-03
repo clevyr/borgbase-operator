@@ -8,7 +8,6 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -30,15 +29,17 @@ func newClient(t *testing.T, objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()
 }
 
-func newRepo(ns, name string) *borgbasev1.Repository {
+func newRepo(ns string) *borgbasev1.Repository {
+	name := testRepoName
 	return &borgbasev1.Repository{
-		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, UID: types.UID("uid-repo-" + name)},
+		Namespace: ns, Name: name, UID: types.UID("uid-repo-" + name),
 	}
 }
 
-func newBackup(ns, name, repoRef string) *borgbasev1.ScheduledBackup {
+func newBackup(name, repoRef string) *borgbasev1.ScheduledBackup {
+	ns := testNS
 	return &borgbasev1.ScheduledBackup{
-		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, UID: types.UID("uid-sb-" + name)},
+		Namespace: ns, Name: name, UID: types.UID("uid-sb-" + name),
 		Spec: borgbasev1.ScheduledBackupSpec{
 			RepositoryRef: corev1.LocalObjectReference{Name: repoRef},
 		},
@@ -46,7 +47,7 @@ func newBackup(ns, name, repoRef string) *borgbasev1.ScheduledBackup {
 }
 
 func TestResolve(t *testing.T) {
-	c := newClient(t, newRepo("prod", "store"), newBackup("prod", "web-files", "store"))
+	c := newClient(t, newRepo(testNS), newBackup(testBackupName, testRepoName))
 	ctx := context.Background()
 
 	tests := []struct {
@@ -55,14 +56,14 @@ func TestResolve(t *testing.T) {
 		wantKind TargetKind
 		wantName string
 	}{
-		{"bare name finds the backup", "web-files", TargetScheduledBackup, "web-files"},
-		{"bare name finds the repository", "store", TargetRepository, "store"},
-		{"sb prefix", "sb/web-files", TargetScheduledBackup, "web-files"},
-		{"scheduledbackup prefix", "scheduledbackup/web-files", TargetScheduledBackup, "web-files"},
-		{"backup prefix", "backup/web-files", TargetScheduledBackup, "web-files"},
-		{"repo prefix", "repo/store", TargetRepository, "store"},
-		{"repository prefix", "repository/store", TargetRepository, "store"},
-		{"prefixes are case insensitive", "SB/web-files", TargetScheduledBackup, "web-files"},
+		{"bare name finds the backup", testBackupName, TargetScheduledBackup, testBackupName},
+		{"bare name finds the repository", testRepoName, TargetRepository, testRepoName},
+		{"sb prefix", "sb/web-files", TargetScheduledBackup, testBackupName},
+		{"scheduledbackup prefix", subjectBackup, TargetScheduledBackup, testBackupName},
+		{"backup prefix", "backup/web-files", TargetScheduledBackup, testBackupName},
+		{"repo prefix", "repo/store", TargetRepository, testRepoName},
+		{"repository prefix", subjectRepo, TargetRepository, testRepoName},
+		{"prefixes are case insensitive", "SB/web-files", TargetScheduledBackup, testBackupName},
 	}
 
 	for _, tt := range tests {
@@ -87,9 +88,9 @@ func TestResolve(t *testing.T) {
 // A bare name that matches both kinds must not be guessed at, since the two
 // commands it could dispatch to do very different things.
 func TestResolveRejectsAmbiguousName(t *testing.T) {
-	c := newClient(t, newRepo("prod", "store"), newBackup("prod", "store", "store"))
+	c := newClient(t, newRepo(testNS), newBackup(testRepoName, testRepoName))
 
-	_, err := Resolve(context.Background(), c, "prod", "store")
+	_, err := Resolve(context.Background(), c, "prod", testRepoName)
 	if !errors.Is(err, ErrAmbiguous) {
 		t.Fatalf("expected ErrAmbiguous, got %v", err)
 	}
@@ -101,7 +102,7 @@ func TestResolveRejectsAmbiguousName(t *testing.T) {
 }
 
 func TestResolveErrors(t *testing.T) {
-	c := newClient(t, newRepo("prod", "store"))
+	c := newClient(t, newRepo(testNS))
 	ctx := context.Background()
 
 	for _, tt := range []struct {
@@ -125,27 +126,27 @@ func TestResolveErrors(t *testing.T) {
 }
 
 func TestResolveIsNamespaceScoped(t *testing.T) {
-	c := newClient(t, newRepo("prod", "store"))
-	if _, err := Resolve(context.Background(), c, "staging", "store"); !errors.Is(err, ErrTargetNotFound) {
+	c := newClient(t, newRepo(testNS))
+	if _, err := Resolve(context.Background(), c, "staging", testRepoName); !errors.Is(err, ErrTargetNotFound) {
 		t.Errorf("expected ErrTargetNotFound in another namespace, got %v", err)
 	}
 }
 
 func TestRepositoryFor(t *testing.T) {
-	sb := newBackup("prod", "web-files", "store")
-	c := newClient(t, newRepo("prod", "store"), sb)
+	sb := newBackup(testBackupName, testRepoName)
+	c := newClient(t, newRepo(testNS), sb)
 
 	got, err := RepositoryFor(context.Background(), c, sb)
 	if err != nil {
 		t.Fatalf("RepositoryFor: %v", err)
 	}
-	if got.Name != "store" {
-		t.Errorf("repository = %q, want %q", got.Name, "store")
+	if got.Name != testRepoName {
+		t.Errorf("repository = %q, want %q", got.Name, testRepoName)
 	}
 
 	// A dangling reference is the RepositoryNotFound path the operator reports,
 	// so the message has to name both objects.
-	dangling := newBackup("prod", "orphan", "gone")
+	dangling := newBackup("orphan", "gone")
 	_, err = RepositoryFor(context.Background(), newClient(t, dangling), dangling)
 	if !errors.Is(err, ErrTargetNotFound) {
 		t.Fatalf("expected ErrTargetNotFound, got %v", err)

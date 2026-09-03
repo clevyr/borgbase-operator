@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
+	"slices"
 
 	"github.com/spf13/cobra"
 	batchv1 "k8s.io/api/batch/v1"
@@ -96,7 +96,11 @@ func runLogs(
 		return fmt.Errorf("%w for scheduledbackup/%s", err, sb.Name)
 	}
 
-	fmt.Fprintf(out, "# job/%s (started %s)\n", job.Name, Since(job.Status.StartTime))
+	p := newPrinter(out)
+	p.printf("# job/%s (started %s)\n", job.Name, Since(job.Status.StartTime))
+	if err := p.Err(); err != nil {
+		return err
+	}
 	return streamJobLogs(ctx, c, cs, out, job, opts)
 }
 
@@ -143,8 +147,8 @@ func BackupJobs(ctx context.Context, c client.Client, sb *borgbasev1.ScheduledBa
 		}
 	}
 
-	sort.SliceStable(jobs, func(i, j int) bool {
-		return jobStart(&jobs[i]).After(jobStart(&jobs[j]).Time)
+	slices.SortStableFunc(jobs, func(a, b batchv1.Job) int {
+		return jobStart(&b).Compare(jobStart(&a).Time)
 	})
 	return jobs, nil
 }
@@ -177,7 +181,11 @@ func streamJobLogs(
 
 	for i := range pods {
 		if len(pods) > 1 {
-			fmt.Fprintf(out, "# pod/%s\n", pods[i].Name)
+			header := newPrinter(out)
+			header.printf("# pod/%s\n", pods[i].Name)
+			if err := header.Err(); err != nil {
+				return err
+			}
 		}
 		stream, err := cs.CoreV1().Pods(job.Namespace).GetLogs(pods[i].Name, &opts).Stream(ctx)
 		if err != nil {

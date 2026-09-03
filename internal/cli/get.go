@@ -93,6 +93,7 @@ func runGet(
 		return printGetObjects(out, output, kinds, &repos, &backups)
 	}
 
+	p := newPrinter(out)
 	empty := true
 	for _, kind := range kinds {
 		var err error
@@ -104,7 +105,7 @@ func runGet(
 		} else {
 			if len(backups.Items) > 0 {
 				if !empty {
-					fmt.Fprintln(out)
+					p.println()
 				}
 				empty = false
 				err = printScheduledBackups(out, backups.Items, allNamespaces, output)
@@ -120,9 +121,9 @@ func runGet(
 		if allNamespaces {
 			scope = "in any namespace"
 		}
-		fmt.Fprintf(out, "No resources found %s.\n", scope)
+		p.printf("No resources found %s.\n", scope)
 	}
-	return nil
+	return p.Err()
 }
 
 func printGetObjects(
@@ -154,13 +155,15 @@ func printGetObjects(
 
 func printRepositories(out io.Writer, items []borgbasev1.Repository, allNamespaces bool, output string) error {
 	if output == OutputName {
+		p := newPrinter(out)
 		for i := range items {
-			fmt.Fprintf(out, "repository.borgbase.clevyr.com/%s\n", items[i].Name)
+			p.printf("repository.borgbase.clevyr.com/%s\n", items[i].Name)
 		}
-		return nil
+		return p.Err()
 	}
 
-	w := NewTabWriter(out)
+	tw := NewTabWriter(out)
+	w := newPrinter(tw)
 	writeHeader(w, allNamespaces, output,
 		[]string{"NAME", "REPO ID", "READY", "INITIALIZED", "USAGE", "QUOTA", "AGE"},
 		[]string{"SERVER", "SECRET", "ADOPTED", "SUSPENDED"})
@@ -168,7 +171,7 @@ func printRepositories(out io.Writer, items []borgbasev1.Repository, allNamespac
 	for i := range items {
 		r := &items[i]
 		writeNamespace(w, allNamespaces, r.Namespace)
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s",
+		w.printf("%s\t%s\t%s\t%s\t%s\t%s\t%s",
 			r.Name,
 			orNone(r.Status.RepositoryID),
 			ConditionStatus(r.Status.Conditions, borgbasev1.RepositoryConditionReady),
@@ -178,27 +181,29 @@ func printRepositories(out io.Writer, items []borgbasev1.Repository, allNamespac
 			Age(r.CreationTimestamp),
 		)
 		if output == OutputWide {
-			fmt.Fprintf(w, "\t%s\t%s\t%s\t%s",
+			w.printf("\t%s\t%s\t%s\t%s",
 				orNone(r.Status.Server),
 				orNone(r.Status.SecretName),
 				yesNo(r.Status.Adopted),
 				yesNo(r.Spec.Suspend),
 			)
 		}
-		fmt.Fprintln(w)
+		w.println()
 	}
-	return w.Flush()
+	return flushTable(w, tw)
 }
 
 func printScheduledBackups(out io.Writer, items []borgbasev1.ScheduledBackup, allNamespaces bool, output string) error {
 	if output == OutputName {
+		p := newPrinter(out)
 		for i := range items {
-			fmt.Fprintf(out, "scheduledbackup.borgbase.clevyr.com/%s\n", items[i].Name)
+			p.printf("scheduledbackup.borgbase.clevyr.com/%s\n", items[i].Name)
 		}
-		return nil
+		return p.Err()
 	}
 
-	w := NewTabWriter(out)
+	tw := NewTabWriter(out)
+	w := newPrinter(tw)
 	writeHeader(w, allNamespaces, output,
 		[]string{"NAME", "REPOSITORY", "SCHEDULE", "READY", "LAST BACKUP", "SUSPENDED", "ACTIVE", "AGE"},
 		[]string{"TIMEZONE", "CONCURRENCY"})
@@ -206,7 +211,7 @@ func printScheduledBackups(out io.Writer, items []borgbasev1.ScheduledBackup, al
 	for i := range items {
 		b := &items[i]
 		writeNamespace(w, allNamespaces, b.Namespace)
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s",
+		w.printf("%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s",
 			b.Name,
 			b.Spec.RepositoryRef.Name,
 			orNone(b.Status.EffectiveSchedule),
@@ -217,33 +222,33 @@ func printScheduledBackups(out io.Writer, items []borgbasev1.ScheduledBackup, al
 			Age(b.CreationTimestamp),
 		)
 		if output == OutputWide {
-			fmt.Fprintf(w, "\t%s\t%s", orNone(b.Spec.TimeZone), orNone(string(b.Spec.ConcurrencyPolicy)))
+			w.printf("\t%s\t%s", orNone(b.Spec.TimeZone), orNone(string(b.Spec.ConcurrencyPolicy)))
 		}
-		fmt.Fprintln(w)
+		w.println()
 	}
-	return w.Flush()
+	return flushTable(w, tw)
 }
 
-func writeHeader(w io.Writer, allNamespaces bool, output string, cols, wideCols []string) {
+func writeHeader(w *printer, allNamespaces bool, output string, cols, wideCols []string) {
 	if allNamespaces {
-		fmt.Fprint(w, "NAMESPACE\t")
+		w.print("NAMESPACE\t")
 	}
 	for i, c := range cols {
 		if i > 0 {
-			fmt.Fprint(w, "\t")
+			w.print("\t")
 		}
-		fmt.Fprint(w, c)
+		w.print(c)
 	}
 	if output == OutputWide {
 		for _, c := range wideCols {
-			fmt.Fprintf(w, "\t%s", c)
+			w.printf("\t%s", c)
 		}
 	}
-	fmt.Fprintln(w)
+	w.println()
 }
 
-func writeNamespace(w io.Writer, allNamespaces bool, ns string) {
+func writeNamespace(w *printer, allNamespaces bool, ns string) {
 	if allNamespaces {
-		fmt.Fprintf(w, "%s\t", ns)
+		w.printf("%s\t", ns)
 	}
 }

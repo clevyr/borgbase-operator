@@ -129,3 +129,53 @@ func orNone(s string) string {
 	}
 	return s
 }
+
+// printer collects write errors so a block of output can be checked once
+// rather than at every call. That keeps the rendering code readable while
+// still surfacing a real failure — a closed pipe from `corg get | head`, say —
+// instead of dropping it.
+type printer struct {
+	w   io.Writer
+	err error
+}
+
+func newPrinter(w io.Writer) *printer { return &printer{w: w} }
+
+// Write lets a printer wrap a tabwriter, so tabulated output is checked too.
+func (p *printer) Write(b []byte) (int, error) {
+	if p.err != nil {
+		return 0, p.err
+	}
+	n, err := p.w.Write(b)
+	p.err = err
+	return n, err
+}
+
+func (p *printer) print(a ...any) {
+	if p.err == nil {
+		_, p.err = fmt.Fprint(p.w, a...)
+	}
+}
+
+func (p *printer) printf(format string, a ...any) {
+	if p.err == nil {
+		_, p.err = fmt.Fprintf(p.w, format, a...)
+	}
+}
+
+func (p *printer) println(a ...any) {
+	if p.err == nil {
+		_, p.err = fmt.Fprintln(p.w, a...)
+	}
+}
+
+// Err reports the first write error, if any.
+func (p *printer) Err() error { return p.err }
+
+// flushTable flushes a tabwriter, preferring an earlier write error.
+func flushTable(p *printer, tw *tabwriter.Writer) error {
+	if err := p.Err(); err != nil {
+		return err
+	}
+	return tw.Flush()
+}

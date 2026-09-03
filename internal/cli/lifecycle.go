@@ -73,10 +73,11 @@ func runSetSuspend(
 		current = &target.ScheduledBackup.Spec.Suspend
 	}
 
+	p := newPrinter(out)
 	label := fmt.Sprintf("%s/%s", target.Kind, target.Name())
 	if *current == suspend {
-		fmt.Fprintf(out, "%s is already %s\n", label, past)
-		return nil
+		p.printf("%s is already %s\n", label, past)
+		return p.Err()
 	}
 
 	patch := client.MergeFrom(obj.DeepCopyObject().(client.Object))
@@ -85,8 +86,8 @@ func runSetSuspend(
 		return err
 	}
 
-	fmt.Fprintf(out, "%s %s\n", label, past)
-	return nil
+	p.printf("%s %s\n", label, past)
+	return p.Err()
 }
 
 func capitalize(s string) string {

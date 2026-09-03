@@ -26,24 +26,24 @@ func setSuspend(t *testing.T, c client.Client, arg string, suspend bool) string 
 }
 
 func TestSuspendAndResumeScheduledBackup(t *testing.T) {
-	sb := readyBackup("prod", "web-files", "store")
+	sb := readyBackup(testBackupName, testRepoName)
 	c := newClient(t, sb)
 	ctx := context.Background()
 
-	if out := setSuspend(t, c, "sb/web-files", true); !strings.Contains(out, "suspended") {
+	if out := setSuspend(t, c, "sb/"+testBackupName, true); !strings.Contains(out, "suspended") {
 		t.Errorf("unexpected output: %q", out)
 	}
 
 	var got borgbasev1.ScheduledBackup
-	if err := c.Get(ctx, types.NamespacedName{Namespace: "prod", Name: "web-files"}, &got); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: testNS, Name: testBackupName}, &got); err != nil {
 		t.Fatal(err)
 	}
 	if !got.Spec.Suspend {
 		t.Fatal("spec.suspend was not set")
 	}
 
-	setSuspend(t, c, "sb/web-files", false)
-	if err := c.Get(ctx, types.NamespacedName{Namespace: "prod", Name: "web-files"}, &got); err != nil {
+	setSuspend(t, c, "sb/"+testBackupName, false)
+	if err := c.Get(ctx, types.NamespacedName{Namespace: testNS, Name: testBackupName}, &got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Spec.Suspend {
@@ -52,11 +52,11 @@ func TestSuspendAndResumeScheduledBackup(t *testing.T) {
 }
 
 func TestSuspendRepository(t *testing.T) {
-	c := newClient(t, newRepo("prod", "store"))
-	setSuspend(t, c, "repo/store", true)
+	c := newClient(t, newRepo(testNS))
+	setSuspend(t, c, "repo/"+testRepoName, true)
 
 	var got borgbasev1.Repository
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "prod", Name: "store"}, &got); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: testRepoName}, &got); err != nil {
 		t.Fatal(err)
 	}
 	if !got.Spec.Suspend {
@@ -66,11 +66,11 @@ func TestSuspendRepository(t *testing.T) {
 
 // Re-suspending must be a no-op rather than a pointless write.
 func TestSuspendIsIdempotent(t *testing.T) {
-	sb := readyBackup("prod", "web-files", "store")
+	sb := readyBackup(testBackupName, testRepoName)
 	sb.Spec.Suspend = true
 	c := newClient(t, sb)
 
-	out := setSuspend(t, c, "sb/web-files", true)
+	out := setSuspend(t, c, "sb/"+testBackupName, true)
 	if !strings.Contains(out, "already suspended") {
 		t.Errorf("expected an already-suspended notice, got %q", out)
 	}

@@ -68,12 +68,12 @@ func (r *report) failed() bool {
 	return false
 }
 
-func (r *report) write(w io.Writer) {
-	fmt.Fprintln(w, r.subject)
+func (r *report) write(p *printer) {
+	p.println(r.subject)
 	for _, c := range r.checks {
-		fmt.Fprintf(w, "  %s %s\n", c.level.symbol(), c.summary)
+		p.printf("  %s %s\n", c.level.symbol(), c.summary)
 		for _, d := range c.detail {
-			fmt.Fprintf(w, "      %s\n", d)
+			p.printf("      %s\n", d)
 		}
 	}
 }
@@ -118,20 +118,25 @@ func runDoctor(ctx context.Context, c client.Client, out io.Writer, namespace, a
 		return err
 	}
 
+	p := newPrinter(out)
+
 	if len(reports) == 0 {
-		fmt.Fprintf(out, "No resources found in namespace %q.\n", namespace)
-		return nil
+		p.printf("No resources found in namespace %q.\n", namespace)
+		return p.Err()
 	}
 
 	unhealthy := false
 	for i, r := range reports {
 		if i > 0 {
-			fmt.Fprintln(out)
+			p.println()
 		}
-		r.write(out)
+		r.write(p)
 		unhealthy = unhealthy || r.failed()
 	}
 
+	if err := p.Err(); err != nil {
+		return err
+	}
 	if unhealthy {
 		return ErrUnhealthy
 	}
