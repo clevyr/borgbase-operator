@@ -39,6 +39,7 @@ const (
 	containerName  = "restic"
 	cacheVolume    = "cache"
 	dataVolume     = "data"
+	dbVolume       = "db-credentials"
 
 	// ttlSeconds is a backstop. The runner deletes its own Job on exit; this
 	// only matters if the CLI is killed outright.
@@ -56,6 +57,10 @@ var (
 	ErrNoCronJob = errors.New("no CronJob for this backup")
 	ErrFailed    = errors.New("command failed")
 	ErrNoPod     = errors.New("no pod was created")
+
+	// ErrMissingDependency is returned when the Job references something that
+	// is not there, which would otherwise strand the pod in Pending.
+	ErrMissingDependency = errors.New("the backup references something that does not exist")
 )
 
 // Runner creates and drives ephemeral Jobs for one ScheduledBackup.
@@ -82,6 +87,12 @@ type Options struct {
 	// ReadWriteOnce, in which case sharing it with a running backup would make
 	// this pod unschedulable.
 	MountCache bool
+
+	// MountDatabase attaches the database credentials. Only a restore into the
+	// database needs them; listing snapshots or opening a shell has no business
+	// holding them, and mounting a Secret a run does not use turns an unrelated
+	// misconfiguration into a failure.
+	MountDatabase bool
 
 	// Image overrides the image resolved from the CronJob.
 	Image string
@@ -149,6 +160,10 @@ func (r *Runner) Build(
 		mountDataWritable(&spec.Template.Spec, container)
 	} else {
 		dropData(&spec.Template.Spec, container)
+	}
+	if !opts.MountDatabase {
+		spec.Template.Spec.Volumes = filterVolumes(spec.Template.Spec.Volumes, dbVolume)
+		container.VolumeMounts = filterMounts(container.VolumeMounts, dbVolume)
 	}
 
 	spec.Template.Spec.Volumes = append(spec.Template.Spec.Volumes, opts.ExtraVolumes...)
@@ -297,19 +312,87 @@ func (r *Runner) WaitForPod(ctx context.Context, job *batchv1.Job, timeout time.
 				if msg := blockedReason(pod); msg != "" {
 					return false, fmt.Errorf("%w: %s", ErrFailed, msg)
 				}
-				if msg := r.blockedByEvent(ctx, pod); msg != "" {
-					return false, fmt.Errorf("%w: %s", ErrFailed, msg)
-				}
 			}
 			return false, nil
 		})
 	if err != nil {
+		if pending := r.pendingPod(ctx, job); pending != "" {
+			return nil, fmt.Errorf("%w: pod %s; describe it for the reason", err, pending)
+		}
 		return nil, err
 	}
 	if found == nil {
 		return nil, ErrNoPod
 	}
 	return found, nil
+}
+
+// pendingPod names a pod still waiting when the deadline passed, with whatever
+// its own status says. Pod status is authoritative and always present, unlike
+// events, which are best-effort and evicted under load.
+func (r *Runner) pendingPod(ctx context.Context, job *batchv1.Job) string {
+	var pods corev1.PodList
+	err := r.Client.List(ctx, &pods,
+		client.InNamespace(job.Namespace),
+		client.MatchingLabels{"batch.kubernetes.io/job-name": job.Name},
+	)
+	if err != nil || len(pods.Items) == 0 {
+		return ""
+	}
+
+	pod := &pods.Items[0]
+	detail := string(pod.Status.Phase)
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Waiting != nil {
+			detail = cs.State.Waiting.Reason
+			break
+		}
+	}
+	return fmt.Sprintf("%s is %s", pod.Name, detail)
+}
+
+// Preflight checks that everything the Job mounts actually exists.
+//
+// A Secret or claim that is missing leaves the pod Pending with no container
+// status to read and no reliable way to learn why, so it is far better to find
+// out before creating anything.
+func (r *Runner) Preflight(ctx context.Context, job *batchv1.Job) error {
+	pod := &job.Spec.Template.Spec
+
+	for _, v := range pod.Volumes {
+		switch {
+		case v.Secret != nil:
+			if err := r.mustExist(ctx, job.Namespace, v.Secret.SecretName, &corev1.Secret{}, "Secret"); err != nil {
+				return err
+			}
+		case v.PersistentVolumeClaim != nil:
+			name := v.PersistentVolumeClaim.ClaimName
+			if err := r.mustExist(ctx, job.Namespace, name, &corev1.PersistentVolumeClaim{}, "PersistentVolumeClaim"); err != nil {
+				return err
+			}
+		}
+	}
+
+	for i := range pod.Containers {
+		for _, from := range pod.Containers[i].EnvFrom {
+			if from.SecretRef == nil {
+				continue
+			}
+			if err := r.mustExist(ctx, job.Namespace, from.SecretRef.Name, &corev1.Secret{}, "Secret"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (r *Runner) mustExist(ctx context.Context, namespace, name string, into client.Object, kind string) error {
+	err := r.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, into)
+	if apierrors.IsNotFound(err) {
+		return fmt.Errorf("%w: %s %q does not exist in namespace %q",
+			ErrMissingDependency, kind, name, namespace)
+	}
+	return err
 }
 
 // blockedReason reports a container state that will not resolve on its own.
@@ -328,39 +411,6 @@ func blockedReason(pod *corev1.Pod) string {
 		if cond.Type == corev1.PodScheduled && cond.Status == corev1.ConditionFalse &&
 			cond.Reason == corev1.PodReasonUnschedulable {
 			return "Unschedulable: " + cond.Message
-		}
-	}
-	return ""
-}
-
-// blockedEventReasons are failures that keep a pod Pending without ever
-// reaching a container status, so they are visible only as events. A missing
-// Secret is the common one: the pod waits forever with nothing to report.
-var blockedEventReasons = map[string]bool{
-	"FailedMount":            true,
-	"FailedAttachVolume":     true,
-	"FailedScheduling":       true,
-	"FailedCreatePodSandBox": true,
-}
-
-// blockedByEvent reports why a pod cannot start, from its events.
-//
-// Events are best-effort: a caller without permission to read them simply gets
-// the slower timeout instead of an error.
-func (r *Runner) blockedByEvent(ctx context.Context, pod *corev1.Pod) string {
-	var events corev1.EventList
-	err := r.Client.List(ctx, &events,
-		client.InNamespace(pod.Namespace),
-		client.MatchingFields{"involvedObject.name": pod.Name},
-	)
-	if err != nil {
-		return ""
-	}
-
-	for i := range events.Items {
-		e := &events.Items[i]
-		if e.Type == corev1.EventTypeWarning && blockedEventReasons[e.Reason] {
-			return e.Reason + ": " + e.Message
 		}
 	}
 	return ""
@@ -412,6 +462,9 @@ func (r *Runner) Run(
 	if err != nil {
 		return err
 	}
+	if err := r.Preflight(ctx, job); err != nil {
+		return err
+	}
 	if err := r.Client.Create(ctx, job); err != nil {
 		return fmt.Errorf("creating job/%s: %w", job.Name, err)
 	}
@@ -442,6 +495,9 @@ func (r *Runner) Attach(
 
 	job, err := r.Build(ctx, sb, opts)
 	if err != nil {
+		return err
+	}
+	if err := r.Preflight(ctx, job); err != nil {
 		return err
 	}
 	if err := r.Client.Create(ctx, job); err != nil {

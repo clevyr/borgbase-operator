@@ -17,9 +17,11 @@ import (
 )
 
 const (
-	testNS    = "prod"
-	testName  = "web-files"
-	testImage = "ghcr.io/clevyr/restic:test"
+	testNS     = "prod"
+	testName   = "web-files"
+	testImage  = "ghcr.io/clevyr/restic:test"
+	testRepo   = "store"
+	testDBName = "app"
 )
 
 // testCommand stands in for whatever restic invocation a command builds; these
@@ -32,7 +34,7 @@ func fixture(t *testing.T, mutate func(*borgbasev1.ScheduledBackup)) (*Runner, *
 	sb := &borgbasev1.ScheduledBackup{
 		Namespace: testNS, Name: testName, UID: "uid-sb",
 		Spec: borgbasev1.ScheduledBackupSpec{
-			RepositoryRef: corev1.LocalObjectReference{Name: "store"},
+			RepositoryRef: corev1.LocalObjectReference{Name: testRepo},
 			Schedule:      "@hourly",
 			Sources:       []borgbasev1.BackupSource{{Type: borgbasev1.SourceTypeCNPG}},
 		},
@@ -40,7 +42,7 @@ func fixture(t *testing.T, mutate func(*borgbasev1.ScheduledBackup)) (*Runner, *
 	if mutate != nil {
 		mutate(sb)
 	}
-	repo := &borgbasev1.Repository{Namespace: testNS, Name: "store"}
+	repo := &borgbasev1.Repository{Namespace: testNS, Name: testRepo}
 
 	// Derive the CronJob the way the operator does, so the runner is tested
 	// against the real rendered shape rather than a hand-built stand-in.
@@ -307,33 +309,73 @@ func envOf(c *corev1.Container, name string) *corev1.EnvVar {
 	return nil
 }
 
-// A pod that cannot mount a Secret stays Pending with nothing in any container
-// status: the reason exists only as an event. Without reading it the CLI waits
-// out the whole timeout with no explanation.
-func TestBlockedByEvent(t *testing.T) {
-	pod := &corev1.Pod{Namespace: testNS, Name: "restore-abc"}
+// A Secret or claim that is missing leaves the pod Pending with no container
+// status to read, so it is caught before anything is created rather than
+// diagnosed afterwards.
+func TestPreflightCatchesAMissingSecret(t *testing.T) {
+	r, sb := fixture(t, func(sb *borgbasev1.ScheduledBackup) {
+		sb.Spec.Database = &borgbasev1.DatabaseSpec{
+			Engine: borgbasev1.DatabaseEngineCNPG, Host: "postgresql-rw", Name: testDBName, User: testDBName,
+		}
+	})
 
-	scheme := runtime.NewScheme()
-	if err := corev1.AddToScheme(scheme); err != nil {
+	// The credentials Secret has to exist, or that is what preflight reports
+	// first; this is about the database Secret specifically.
+	if err := r.Client.Create(context.Background(),
+		&corev1.Secret{Namespace: testNS, Name: testRepo + "-borgbase"}); err != nil {
 		t.Fatal(err)
 	}
-	event := &corev1.Event{
-		Namespace: testNS, Name: "restore-abc.1",
-		Type:   corev1.EventTypeWarning,
-		Reason: "FailedMount",
-		Message: `MountVolume.SetUp failed for volume "db-credentials" : ` +
-			`secret "postgresql-app" not found`,
-		InvolvedObject: corev1.ObjectReference{Namespace: testNS, Name: pod.Name},
-	}
-	r := &Runner{Client: fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(pod, event).
-		WithIndex(&corev1.Event{}, "involvedObject.name", func(o client.Object) []string {
-			return []string{o.(*corev1.Event).InvolvedObject.Name}
-		}).Build()}
 
-	got := r.blockedByEvent(context.Background(), pod)
-	if !strings.Contains(got, "FailedMount") || !strings.Contains(got, "postgresql-app") {
-		t.Errorf("blockedByEvent = %q, want it to name the missing Secret", got)
+	job, err := r.Build(context.Background(), sb, Options{Command: testCommand, MountDatabase: true})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	err = r.Preflight(context.Background(), job)
+	if !errors.Is(err, ErrMissingDependency) {
+		t.Fatalf("expected ErrMissingDependency, got %v", err)
+	}
+	// The message has to name what is missing, or it is no better than the hang.
+	if !strings.Contains(err.Error(), "postgresql-app") {
+		t.Errorf("error should name the missing Secret: %v", err)
+	}
+}
+
+// The credentials Secret is mounted with envFrom rather than as a volume, so it
+// has to be checked too.
+func TestPreflightChecksEnvFromSecrets(t *testing.T) {
+	r, sb := fixture(t, nil)
+
+	job, err := r.Build(context.Background(), sb, Options{Command: testCommand})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	err = r.Preflight(context.Background(), job)
+	if !errors.Is(err, ErrMissingDependency) {
+		t.Fatalf("expected ErrMissingDependency for the credentials Secret, got %v", err)
+	}
+}
+
+// With everything present, preflight passes.
+func TestPreflightPassesWhenDependenciesExist(t *testing.T) {
+	r, sb := fixture(t, nil)
+
+	job, err := r.Build(context.Background(), sb, Options{Command: testCommand})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if err := r.Client.Create(context.Background(),
+		&corev1.Secret{Namespace: testNS, Name: testRepo + "-borgbase"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Client.Create(context.Background(),
+		&corev1.PersistentVolumeClaim{Namespace: testNS, Name: testName + "-cache"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.Preflight(context.Background(), job); err != nil {
+		t.Errorf("preflight should pass with dependencies present: %v", err)
 	}
 }
 
@@ -348,5 +390,35 @@ func TestBlockedReasonUnschedulable(t *testing.T) {
 	}}
 	if got := blockedReason(pod); !strings.Contains(got, "Unschedulable") {
 		t.Errorf("blockedReason = %q", got)
+	}
+}
+
+// Only a restore into the database needs its credentials. Mounting them into
+// every run makes an unrelated misconfiguration fail commands that never touch
+// the database, and holds a Secret the run has no use for.
+func TestBuildOnlyMountsDatabaseCredentialsWhenAsked(t *testing.T) {
+	mutate := func(sb *borgbasev1.ScheduledBackup) {
+		sb.Spec.Database = &borgbasev1.DatabaseSpec{
+			Engine: borgbasev1.DatabaseEngineCNPG, Host: "postgresql-rw",
+			Name: testDBName, User: testDBName,
+		}
+	}
+	r, sb := fixture(t, mutate)
+	ctx := context.Background()
+
+	bare, err := r.Build(ctx, sb, Options{Command: testCommand})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if hasVolume(bare, dbVolume) {
+		t.Error("database credentials mounted into a run that does not use them")
+	}
+
+	restore, err := r.Build(ctx, sb, Options{Command: testCommand, MountDatabase: true})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !hasVolume(restore, dbVolume) {
+		t.Error("--to-database needs the credentials mounted")
 	}
 }

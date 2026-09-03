@@ -358,8 +358,9 @@ func restoreToDatabase(
 			"or unpin spec.image"), pipeline)
 
 	return run.Run(ctx, sb, runner.Options{
-		Purpose: "restoredb",
-		Command: []string{"sh", "-c", guarded},
+		Purpose:       "restoredb",
+		MountDatabase: true,
+		Command:       []string{"sh", "-c", guarded},
 	}, f.Streams.Out, defaultResticTimeout)
 }
 
