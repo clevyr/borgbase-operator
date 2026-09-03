@@ -46,6 +46,7 @@ type ScheduledBackupReconciler struct {
 // +kubebuilder:rbac:groups=borgbase.clevyr.com,resources=scheduledbackups/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=borgbase.clevyr.com,resources=scheduledbackups/finalizers,verbs=update
 // +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;create;delete
 
 // Reconcile renders a ScheduledBackup into a CronJob and its cache volume.
@@ -140,6 +141,8 @@ func (r *ScheduledBackupReconciler) reconcile(
 		return ctrl.Result{}, err
 	}
 
+	var cronJobUID types.UID
+
 	var current batchv1.CronJob
 	err = r.Get(ctx, types.NamespacedName{Namespace: desired.Namespace, Name: desired.Name}, &current)
 	switch {
@@ -157,6 +160,7 @@ func (r *ScheduledBackupReconciler) reconcile(
 		}
 		r.Recorder.Eventf(sb, nil, corev1.EventTypeNormal, "CronJobCreated", "Create",
 			"Created CronJob %s on schedule %s", desired.Name, desired.Spec.Schedule)
+		cronJobUID = desired.UID
 	case err != nil:
 		return ctrl.Result{}, err
 	default:
@@ -172,6 +176,7 @@ func (r *ScheduledBackupReconciler) reconcile(
 		sb.Status.LastScheduleTime = current.Status.LastScheduleTime
 		sb.Status.LastSuccessfulTime = current.Status.LastSuccessfulTime
 		sb.Status.Active = int32(len(current.Status.Active))
+		cronJobUID = current.UID
 	}
 
 	sb.Status.EffectiveSchedule = desired.Spec.Schedule
@@ -181,6 +186,16 @@ func (r *ScheduledBackupReconciler) reconcile(
 		Reason:  "Ready",
 		Message: fmt.Sprintf("Backing up on schedule %s", desired.Spec.Schedule),
 	})
+
+	runs, err := r.observedRuns(ctx, sb, cronJobUID)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	sb.Status.History = mergeHistory(sb.Status.History, runs)
+
+	if err := r.reconcileTrigger(ctx, sb, &repo, runs); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	// Poll so that lastSuccessfulTime stays fresh even though CronJob status
 	// changes do not always generate a watch event this controller sees.
@@ -320,8 +335,11 @@ func (r *ScheduledBackupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(crcontroller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
-		For(&borgbasev1.ScheduledBackup{}, builder.WithPredicates(ignoreOwnStatusWrites())).
+		For(&borgbasev1.ScheduledBackup{}, builder.WithPredicates(ignoreOwnStatusWrites(borgbasev1.AnnotationTriggerAt))).
 		Owns(&batchv1.CronJob{}).
+		// One-off runs are owned by the ScheduledBackup, so their completion
+		// updates history without waiting for the periodic requeue.
+		Owns(&batchv1.Job{}).
 		Watches(
 			&borgbasev1.Repository{},
 			handler.EnqueueRequestsFromMapFunc(r.backupsForRepository),
