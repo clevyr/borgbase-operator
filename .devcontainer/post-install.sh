@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
+# Pinned rather than "latest": a devcontainer that installs whatever shipped
+# this morning stops being a reproducible environment, and a kind or
+# kubebuilder bump can break the e2e tests with no change in this repo.
+KIND_VERSION=${KIND_VERSION:-v0.32.0}
+KUBEBUILDER_VERSION=${KUBEBUILDER_VERSION:-v4.15.0}
+
 echo "===================================="
 echo "Kubebuilder DevContainer Setup"
 echo "===================================="
@@ -50,7 +56,7 @@ echo "------------------------------------"
 # Install kind
 if ! command -v kind &> /dev/null; then
   echo "Installing kind..."
-  curl -Lo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/latest/kind-linux-${ARCH}"
+  curl -Lo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-${ARCH}"
   chmod +x /usr/local/bin/kind
   echo "kind installed successfully"
 fi
@@ -67,7 +73,7 @@ fi
 # Install kubebuilder
 if ! command -v kubebuilder &> /dev/null; then
   echo "Installing kubebuilder..."
-  curl -Lo /usr/local/bin/kubebuilder "https://go.kubebuilder.io/dl/latest/linux/${ARCH}"
+  curl -Lo /usr/local/bin/kubebuilder "https://go.kubebuilder.io/dl/${KUBEBUILDER_VERSION}/linux/${ARCH}"
   chmod +x /usr/local/bin/kubebuilder
   echo "kubebuilder installed successfully"
 fi

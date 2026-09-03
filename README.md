@@ -72,14 +72,42 @@ spec:
 types do not cover; it still gets the standard preamble, logging and cache
 cleanup.
 
+Two backups in one namespace must set distinct `healthchecks.slug` values. The
+slug defaults to the namespace, and sharing one check would let either
+backup's success hide the other's failure, so the newer of the two is held
+back with `SlugConflict` rather than silently reporting into the same place.
+
+### Pod security
+
+Backup pods drop every capability, forbid privilege escalation, run under the
+`RuntimeDefault` seccomp profile and mount no ServiceAccount token.
+
+No user or group id is imposed. A backup has to read the app's own data, whose
+ownership varies per app and per cluster, and an `fsGroup` would chown that
+data as a side effect of backing it up. A namespace enforcing the restricted
+Pod Security Standard supplies what it needs through `spec.podSecurityContext`,
+with `spec.containerSecurityContext` for `readOnlyRootFilesystem`. Both replace
+the default wholesale.
+
+### Database credentials
+
+`spec.database.secretName` chooses the Secret; it does not choose where the
+Secret is mounted. `dumpdb` is invoked without `--secret-mount`, so it reads a
+fixed path per engine, and the operator mounts there: `/postgresql-app` for
+cnpg and `/mariadb` for mariadb, whatever the Secret is called.
+
 #### Schedules
 
-A five-field cron expression is passed through untouched. A shorthand
-(`@hourly`, `@daily`, `@weekly`, `@monthly`, `@every 6h`) is expanded with a
-jitter derived from the resource's namespace and name, so copy-pasted backups
-spread across the period instead of all firing on the hour. The result appears
-in `status.effectiveSchedule`. The jitter is stable: a backup keeps its slot
-unless it is renamed.
+A five-field cron expression is passed through untouched. A shorthand is
+expanded with a jitter derived from the resource's namespace and name, so
+copy-pasted backups spread across the period instead of all firing on the hour.
+The result appears in `status.effectiveSchedule`. The jitter is stable: a
+backup keeps its slot unless it is renamed.
+
+Accepted shorthands are `@hourly`, `@daily` (`@midnight`), `@weekly`,
+`@monthly`, `@yearly` (`@annually`) and `@every <duration>`. Stepped schedules
+are phase-shifted rather than started at zero, so `@every 15m` renders as
+`7-59/15 * * * *` rather than `*/15 * * * *`.
 
 Steps that do not divide their period evenly (`@every 7h`) are rejected, since
 cron restarts the sequence each period and would leave an irregular gap.
@@ -103,7 +131,7 @@ one-hour grace. Adopting an existing check preserves its tuned values: set its
 
 | Flag | Default | Purpose |
 | --- | --- | --- |
-| `--api-token-secret` | `borgbase-system/borgbase-api` | Default BorgBase API token |
+| `--api-token-secret` | `borgbase-api` | Default BorgBase API token. A bare name resolves in the operator's own namespace, taken from `POD_NAMESPACE` |
 | `--api-token-key` | `token` | Key within that Secret |
 | `--backup-image` | `ghcr.io/clevyr/restic:0.18.1` | Must provide restic, runitor, ts, dumpdb |
 | `--cache-storage-class` | *(none)* | StorageClass for restic cache volumes |
@@ -112,9 +140,11 @@ one-hour grace. Adopting an existing check preserves its tuned values: set its
 | `--healthchecks-auto-create` | `true` | Auto-provision checks on first ping |
 | `--borgbase-endpoint` | *(public API)* | Override, for testing |
 
-The BorgBase token needs **Full Access**: `repoAdd` alone is insufficient
-because the operator also uses `repoEdit`, and `repoDelete` under the `Delete`
-policy.
+The BorgBase token needs **Full Access**. `repoAdd` alone is insufficient:
+`quotaGiB`, `alertDays` and `appendOnly` are reconciled on every pass with
+`repoEdit`, and `repoDelete` is used under the `Delete` policy. Only fields
+that actually differ are sent, so a setting changed in the BorgBase UI that
+the spec says nothing about is left alone.
 
 ## Migrating an existing backup
 
@@ -141,9 +171,15 @@ and `CHECK_UUID` is replaced by slug pinging, so both can be dropped.
 
 ```sh
 make manifests generate   # regenerate CRDs, RBAC and deepcopy
-make test                 # unit tests
+make test                 # unit tests, no cluster needed
+make test-crd             # CRD validation against a real API server (envtest)
+make test-e2e             # full deploy against a throwaway Kind cluster
 make build-installer IMG=...   # render dist/install.yaml
 ```
+
+Most of the validation lives in CEL rules on the CRDs, which no Go test can
+reach: a rule that fails to compile makes every CRD install fail, and one that
+never fires is invisible. `make test-crd` runs them against a real API server.
 
 Releases publish a container image to `ghcr.io/clevyr/borgbase-operator` and
 the rendered manifests as an OCI artifact at
