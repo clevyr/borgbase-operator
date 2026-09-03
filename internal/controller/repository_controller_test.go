@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -782,4 +783,100 @@ func derefInt64(p *int64) any {
 		return "<unset>"
 	}
 	return *p
+}
+
+// Two Repository resources pointing at one BorgBase repository each push their
+// own spec to it, so they overwrite each other on every reconcile and the
+// repository flaps. The newcomer is held back instead.
+func TestConflictingRepositoriesDoNotFight(t *testing.T) {
+	incumbent := &borgbasev1.Repository{
+		Name: resticName, Namespace: testNS,
+		CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour)),
+		Status:            borgbasev1.RepositoryStatus{RepositoryID: testRepoID, Initialized: true},
+	}
+	newcomer := &borgbasev1.Repository{
+		Name: "adopted", Namespace: testNS,
+		CreationTimestamp: metav1.NewTime(time.Now()),
+		Spec:              borgbasev1.RepositorySpec{ExistingRepositoryID: testRepoID},
+	}
+
+	api := newFakeAPI(&borgbase.Repo{
+		ID: testRepoID, Name: testNS, Format: borgbase.FormatRestic, Htpasswd: "t",
+		Quota: 100, QuotaEnabled: true,
+	})
+	r, _ := newHarness(t, api, incumbent, newcomer)
+
+	other, err := r.repositoryConflict(context.Background(), newcomer, testRepoID)
+	if err != nil {
+		t.Fatalf("repositoryConflict: %v", err)
+	}
+	if other != testNS+"/"+resticName {
+		t.Errorf("newcomer should defer to the incumbent, got %q", other)
+	}
+
+	// The incumbent carries on: it was there first.
+	other, err = r.repositoryConflict(context.Background(), incumbent, testRepoID)
+	if err != nil {
+		t.Fatalf("repositoryConflict: %v", err)
+	}
+	if other != "" {
+		t.Errorf("the incumbent must keep managing the repository, got conflict with %q", other)
+	}
+}
+
+// A repository nothing else claims is not a conflict, and neither is one whose
+// only other claimant is being deleted.
+func TestRepositoryConflictIgnoresUnrelatedAndDeleted(t *testing.T) {
+	deleting := &borgbasev1.Repository{
+		Name: "old", Namespace: testNS,
+		CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour)),
+		DeletionTimestamp: ptr.To(metav1.Now()),
+		Finalizers:        []string{FinalizerName},
+		Status:            borgbasev1.RepositoryStatus{RepositoryID: testRepoID},
+	}
+	elsewhere := &borgbasev1.Repository{
+		Name: "other", Namespace: "somewhere-else",
+		CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour)),
+		Status:            borgbasev1.RepositoryStatus{RepositoryID: "different"},
+	}
+	mine := &borgbasev1.Repository{
+		Name: resticName, Namespace: testNS,
+		CreationTimestamp: metav1.NewTime(time.Now()),
+		Status:            borgbasev1.RepositoryStatus{RepositoryID: testRepoID},
+	}
+
+	r, _ := newHarness(t, newFakeAPI(), deleting, elsewhere, mine)
+
+	other, err := r.repositoryConflict(context.Background(), mine, testRepoID)
+	if err != nil {
+		t.Fatalf("repositoryConflict: %v", err)
+	}
+	if other != "" {
+		t.Errorf("expected no conflict, got %q", other)
+	}
+}
+
+// The check spans namespaces, because a BorgBase repository belongs to the
+// account rather than to any one namespace.
+func TestRepositoryConflictIsClusterWide(t *testing.T) {
+	incumbent := &borgbasev1.Repository{
+		Name: resticName, Namespace: "team-a",
+		CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour)),
+		Status:            borgbasev1.RepositoryStatus{RepositoryID: testRepoID},
+	}
+	newcomer := &borgbasev1.Repository{
+		Name: resticName, Namespace: "team-b",
+		CreationTimestamp: metav1.NewTime(time.Now()),
+		Spec:              borgbasev1.RepositorySpec{ExistingRepositoryID: testRepoID},
+	}
+
+	r, _ := newHarness(t, newFakeAPI(), incumbent, newcomer)
+
+	other, err := r.repositoryConflict(context.Background(), newcomer, testRepoID)
+	if err != nil {
+		t.Fatalf("repositoryConflict: %v", err)
+	}
+	if other != "team-a/"+resticName {
+		t.Errorf("expected the conflict to be found across namespaces, got %q", other)
+	}
 }

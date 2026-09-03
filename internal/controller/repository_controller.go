@@ -204,6 +204,25 @@ func (r *RepositoryReconciler) reconcile(
 			"%w: repository %s has format %q", borgbase.ErrNotRestic, remote.ID, remote.Format)
 	}
 
+	// Two Repository resources pointing at one BorgBase repository each push
+	// their own spec to it, so every reconcile overwrites the other's settings
+	// and the repository flaps between them. Hold the newcomer back rather than
+	// letting them fight.
+	if other, err := r.repositoryConflict(ctx, repo, remote.ID); err != nil {
+		return ctrl.Result{}, err
+	} else if other != "" {
+		r.setCondition(repo, metav1.Condition{
+			Type:   borgbasev1.RepositoryConditionReady,
+			Status: metav1.ConditionFalse,
+			Reason: "RepositoryConflict",
+			Message: fmt.Sprintf(
+				"BorgBase repository %s is already managed by Repository %s; "+
+					"point one of them elsewhere, or delete this one", remote.ID, other),
+		})
+		// Its settings are deliberately left alone: the incumbent owns them.
+		return ctrl.Result{RequeueAfter: r.interval(repo)}, nil
+	}
+
 	if remote, err = r.reconcileSettings(ctx, repo, remote, api); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -323,6 +342,60 @@ func (r *RepositoryReconciler) resolveRepo(
 	r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryCreated", "Create",
 		"Created BorgBase repository %s (%s)", remote.ID, name)
 	return remote, nil
+}
+
+// repositoryConflict returns the Repository that already manages this BorgBase
+// repository, or "" when there is none.
+//
+// The check is cluster-wide, because a BorgBase repository belongs to the
+// account rather than to a namespace. Only a resource created earlier counts as
+// the incumbent, so the one already managing it keeps working and the newcomer
+// is the one held back -- the same rule the healthchecks slug conflict uses.
+func (r *RepositoryReconciler) repositoryConflict(
+	ctx context.Context, repo *borgbasev1.Repository, id string,
+) (string, error) {
+	if id == "" {
+		return "", nil
+	}
+
+	var list borgbasev1.RepositoryList
+	if err := r.List(ctx, &list); err != nil {
+		return "", fmt.Errorf("listing repositories: %w", err)
+	}
+
+	for i := range list.Items {
+		other := &list.Items[i]
+		if !other.DeletionTimestamp.IsZero() ||
+			(other.Namespace == repo.Namespace && other.Name == repo.Name) {
+			continue
+		}
+		if managedID(other) != id {
+			continue
+		}
+		if olderRepository(other, repo) {
+			return other.Namespace + "/" + other.Name, nil
+		}
+	}
+	return "", nil
+}
+
+// managedID is the BorgBase repository a resource manages: the one it has
+// recorded, or the one it was told to adopt before it has reconciled.
+func managedID(repo *borgbasev1.Repository) string {
+	if repo.Status.RepositoryID != "" {
+		return repo.Status.RepositoryID
+	}
+	return repo.Spec.ExistingRepositoryID
+}
+
+func olderRepository(a, b *borgbasev1.Repository) bool {
+	if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
+		return a.CreationTimestamp.Before(&b.CreationTimestamp)
+	}
+	if a.Namespace != b.Namespace {
+		return a.Namespace < b.Namespace
+	}
+	return a.Name < b.Name
 }
 
 // reconcileSettings brings the repository's mutable settings in line with the
