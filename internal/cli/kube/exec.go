@@ -34,8 +34,6 @@ type ExecOptions struct {
 
 	TTY       bool
 	SizeQueue remotecommand.TerminalSizeQueue
-
-	DisablePing bool
 }
 
 // Exec runs a command in a running container and streams its I/O.
@@ -68,15 +66,10 @@ func Exec(ctx context.Context, cfg *rest.Config, cs kubernetes.Interface, opts E
 		proxy = cfg.Proxy
 	}
 
-	pingPeriod := defaultPingPeriod
-	if opts.DisablePing {
-		pingPeriod = 0
-	}
-
 	roundTripper, err := spdy.NewRoundTripperWithConfig(spdy.RoundTripperConfig{
 		TLS:        tlsConfig,
 		Proxier:    proxy,
-		PingPeriod: pingPeriod,
+		PingPeriod: defaultPingPeriod,
 	})
 	if err != nil {
 		return err

@@ -99,8 +99,6 @@ func openShell(
 				Stderr:    f.Streams.ErrOut,
 				TTY:       interactive,
 				SizeQueue: sizeQueueFor(interactive, stdin),
-
-				DisablePing: true,
 			})
 		}
 

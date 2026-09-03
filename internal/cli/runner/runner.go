@@ -473,6 +473,5 @@ func (r *Runner) Exec(ctx context.Context, pod *corev1.Pod, opts kube.ExecOption
 		opts.Container = containerName
 	}
 
-	opts.DisablePing = true
 	return kube.Exec(ctx, r.RESTConfig, r.Clientset, opts)
 }
