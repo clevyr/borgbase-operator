@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -254,15 +255,63 @@ var _ = Describe("Manager", Ordered, func() {
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput, err := getMetricsOutput()
-		// Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
+		// A ScheduledBackup whose Repository does not exist must report why and
+		// must not create a CronJob. This exercises the whole controller path
+		// (watch, reconcile, status write) against a real API server without
+		// needing BorgBase credentials, and it guards the invariant that
+		// matters most here: never schedule a backup that cannot succeed.
+		It("should refuse to schedule a backup with no repository", func() {
+			const (
+				testNS = "borgbase-e2e"
+				name   = "orphaned"
+			)
+
+			By("creating a test namespace")
+			cmd := exec.Command("kubectl", "create", "ns", testNS)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create the test namespace")
+			DeferCleanup(func() {
+				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found"))
+			})
+
+			By("applying a ScheduledBackup that references a missing Repository")
+			manifest := fmt.Sprintf(`apiVersion: borgbase.clevyr.com/v1
+kind: ScheduledBackup
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  repositoryRef:
+    name: does-not-exist
+  schedule: "@hourly"
+  sources:
+    - type: cnpg
+      tag: db
+  healthchecks:
+    enabled: false
+`, name, testNS)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(manifest)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply the ScheduledBackup")
+
+			By("waiting for the controller to report the missing repository")
+			verifyNotReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "scheduledbackup", name, "-n", testNS,
+					"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")
+				reason, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(reason).To(Equal("RepositoryNotFound"))
+			}
+			Eventually(verifyNotReady, 2*time.Minute).Should(Succeed())
+
+			By("verifying no CronJob was created")
+			cmd = exec.Command("kubectl", "get", "cronjob", "-n", testNS,
+				"-o", "jsonpath={.items[*].metadata.name}")
+			cronjobs, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cronjobs).To(BeEmpty(), "a backup was scheduled against a missing repository")
+		})
 	})
 })
 
