@@ -250,7 +250,10 @@ func TestCreatesRepositoryAndInitJob(t *testing.T) {
 }
 
 // A finished init Job should not linger as a Completed pod waiting for its TTL.
-func TestSucceededInitJobIsRemoved(t *testing.T) {
+// It is removed on the pass after initialization is recorded, not the same one:
+// deleting it immediately fires a watch event that can be handled before the
+// status write lands, and that reconcile would start a second Job.
+func TestSucceededInitJobIsRemovedOnTheNextPass(t *testing.T) {
 	api := newFakeAPI()
 	r, c := newHarness(t, api, repositoryFixture(nil))
 	reconcileN(t, r, 2)
@@ -266,18 +269,31 @@ func TestSucceededInitJobIsRemoved(t *testing.T) {
 	if err := c.Status().Update(context.Background(), &job); err != nil {
 		t.Fatal(err)
 	}
-	reconcileN(t, r, 1)
 
+	// First pass records initialization and leaves the Job alone.
+	reconcileN(t, r, 1)
 	var repo borgbasev1.Repository
 	if err := c.Get(context.Background(),
 		types.NamespacedName{Namespace: testNS, Name: resticName}, &repo); err != nil {
 		t.Fatal(err)
 	}
 	if !repo.Status.Initialized {
-		t.Error("repository should be marked initialized")
+		t.Fatal("repository should be marked initialized")
 	}
+	if err := c.Get(context.Background(), key, &job); err != nil {
+		t.Errorf("init job should survive the pass that records success: %v", err)
+	}
+
+	// The next pass, with Initialized already persisted, removes it.
+	reconcileN(t, r, 1)
 	if err := c.Get(context.Background(), key, &job); !apierrors.IsNotFound(err) {
-		t.Errorf("init job should have been deleted after succeeding, got %v", err)
+		t.Errorf("init job should have been deleted, got %v", err)
+	}
+
+	// And no replacement is ever created.
+	reconcileN(t, r, 3)
+	if err := c.Get(context.Background(), key, &job); !apierrors.IsNotFound(err) {
+		t.Error("a second init job was created after initialization completed")
 	}
 }
 

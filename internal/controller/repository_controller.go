@@ -39,6 +39,14 @@ const (
 	KeyResticPassword   = "RESTIC_PASSWORD"
 
 	initJobSuffix = "-init"
+
+	// initCleanupDelay is how long to wait after recording initialization
+	// before removing the init Job, so the status write reaches the cache first.
+	initCleanupDelay = 10 * time.Second
+
+	// initRetryDelay paces replacement of a failed init Job, and keeps its logs
+	// around for that long.
+	initRetryDelay = 5 * time.Minute
 )
 
 // RepositoryReconciler reconciles a Repository object.
@@ -160,6 +168,7 @@ func (r *RepositoryReconciler) reconcile(
 		return ctrl.Result{}, err
 	}
 
+	justInitialized := false
 	if !repo.Status.Initialized {
 		requeue, err := r.reconcileInitJob(ctx, repo)
 		if err != nil {
@@ -174,6 +183,9 @@ func (r *RepositoryReconciler) reconcile(
 			})
 			return ctrl.Result{RequeueAfter: requeue}, nil
 		}
+		justInitialized = true
+	} else if err := r.cleanupInitJob(ctx, repo); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	r.setCondition(repo, metav1.Condition{
@@ -188,6 +200,14 @@ func (r *RepositoryReconciler) reconcile(
 		Reason:  "Ready",
 		Message: "repository is ready",
 	})
+
+	if justInitialized {
+		// Come back shortly to remove the finished Job, rather than deleting it
+		// here. Deleting it in this pass fires a watch event that can be
+		// handled before this status write reaches the informer cache, and that
+		// reconcile would see Initialized false with no Job and start another.
+		return ctrl.Result{RequeueAfter: initCleanupDelay}, nil
+	}
 
 	return ctrl.Result{RequeueAfter: r.interval(repo)}, nil
 }
@@ -381,23 +401,26 @@ func (r *RepositoryReconciler) reconcileInitJob(
 	switch {
 	case err == nil:
 		if job.Status.Succeeded > 0 {
+			// Deliberately not deleted here; cleanupInitJob removes it on a
+			// later pass, once Initialized has reached the cache.
 			repo.Status.Initialized = true
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "Initialized", "Initialize",
 				"restic init completed successfully")
-			if err := r.deleteJob(ctx, &job); err != nil {
-				return 0, err
-			}
 			return 0, nil
 		}
-		if isJobFailed(&job) {
+		if failedAt := jobFailedAt(&job); failedAt != nil {
+			// Wait before replacing it. Deleting the exhausted Job immediately
+			// fires a watch event that recreates it at once, turning the retry
+			// into a hot loop against a repository that is already failing.
+			if wait := initRetryDelay - time.Since(*failedAt); wait > 0 {
+				return wait, nil
+			}
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "InitFailed", "Initialize",
 				"restic init failed; retrying")
-			// Remove the exhausted Job so the next reconcile starts a fresh
-			// one; without this a transient failure would wedge permanently.
 			if err := r.deleteJob(ctx, &job); err != nil {
 				return 0, err
 			}
-			return 5 * time.Minute, nil
+			return initRetryDelay, nil
 		}
 		return 15 * time.Second, nil
 
@@ -485,13 +508,27 @@ func (r *RepositoryReconciler) deleteJob(ctx context.Context, job *batchv1.Job) 
 	return nil
 }
 
-func isJobFailed(job *batchv1.Job) bool {
+// cleanupInitJob removes the init Job once initialization has been recorded.
+func (r *RepositoryReconciler) cleanupInitJob(
+	ctx context.Context, repo *borgbasev1.Repository,
+) error {
+	var job batchv1.Job
+	key := types.NamespacedName{Namespace: repo.Namespace, Name: repo.Name + initJobSuffix}
+	if err := r.Get(ctx, key, &job); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	return r.deleteJob(ctx, &job)
+}
+
+// jobFailedAt returns when a Job exhausted its retries, or nil if it has not.
+func jobFailedAt(job *batchv1.Job) *time.Time {
 	for _, c := range job.Status.Conditions {
 		if c.Type == batchv1.JobFailed && c.Status == corev1.ConditionTrue {
-			return true
+			t := c.LastTransitionTime.Time
+			return &t
 		}
 	}
-	return false
+	return nil
 }
 
 // finalize handles deletion according to the deletion policy.
