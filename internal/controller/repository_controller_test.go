@@ -243,6 +243,11 @@ func TestCreatesRepositoryAndInitJob(t *testing.T) {
 	if automount := job.Spec.Template.Spec.AutomountServiceAccountToken; automount == nil || *automount {
 		t.Error("init job should not mount a service account token")
 	}
+	// Requests keep the pod out of BestEffort, which would make it the first
+	// thing evicted and leave the repository stuck uninitialized.
+	if container.Resources.Requests.Cpu().IsZero() || container.Resources.Requests.Memory().IsZero() {
+		t.Error("init job should set resource requests")
+	}
 }
 
 // Retain is the default precisely so that removing a Kubernetes object can
