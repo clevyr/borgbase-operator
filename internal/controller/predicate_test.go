@@ -81,3 +81,65 @@ func TestIgnoreOwnStatusWritesPassesCreateAndDelete(t *testing.T) {
 		t.Error("delete events must not be filtered")
 	}
 }
+
+// An annotation change does not advance the generation, so without an explicit
+// watch the trigger annotation would land on the object and never be acted on.
+func TestIgnoreOwnStatusWritesPassesWatchedAnnotations(t *testing.T) {
+	annotated := func(v string) *borgbasev1.Repository {
+		return repoWith(func(r *borgbasev1.Repository) {
+			if v != "" {
+				r.Annotations = map[string]string{borgbasev1.AnnotationTriggerAt: v}
+			}
+		})
+	}
+
+	tests := []struct {
+		name     string
+		old, new *borgbasev1.Repository
+		watched  []string
+		want     bool
+	}{
+		{
+			name:    "watched annotation added passes",
+			old:     annotated(""),
+			new:     annotated("2026-09-03T14:12:00Z"),
+			watched: []string{borgbasev1.AnnotationTriggerAt},
+			want:    true,
+		},
+		{
+			name:    "watched annotation changed passes",
+			old:     annotated("2026-09-03T14:12:00Z"),
+			new:     annotated("2026-09-03T15:30:00Z"),
+			watched: []string{borgbasev1.AnnotationTriggerAt},
+			want:    true,
+		},
+		{
+			// Re-reconciling the same request must not run the work twice.
+			name:    "unchanged annotation is still filtered",
+			old:     annotated("2026-09-03T14:12:00Z"),
+			new:     annotated("2026-09-03T14:12:00Z"),
+			watched: []string{borgbasev1.AnnotationTriggerAt},
+			want:    false,
+		},
+		{
+			name:    "unwatched annotation is filtered",
+			old:     annotated(""),
+			new:     annotated("2026-09-03T14:12:00Z"),
+			watched: nil,
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := ignoreOwnStatusWrites(tt.watched...)
+			got := p.Update(event.UpdateEvent{
+				ObjectOld: client.Object(tt.old),
+				ObjectNew: client.Object(tt.new),
+			})
+			if got != tt.want {
+				t.Errorf("Update() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}

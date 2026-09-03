@@ -1904,12 +1904,67 @@ spec:
                   effectiveSchedule is the cron expression actually given to the CronJob,
                   after jitter is applied.
                 type: string
+              history:
+                description: |-
+                  history is the most recent runs, newest first. Jobs are removed an hour
+                  after they finish and pruned by the history limits, so recording them
+                  here is the only durable record of whether backups have been working.
+                items:
+                  description: BackupRun is one recorded backup attempt.
+                  properties:
+                    completionTime:
+                      description: completionTime is when it finished, absent while
+                        it is still running.
+                      format: date-time
+                      type: string
+                    jobName:
+                      description: jobName is the Job that ran it. It may no longer
+                        exist.
+                      type: string
+                    result:
+                      description: |-
+                        result is the outcome. Running entries are updated in place as the run
+                        finishes.
+                      enum:
+                      - Running
+                      - Succeeded
+                      - Failed
+                      type: string
+                    startTime:
+                      description: startTime is when the run's Job started.
+                      format: date-time
+                      type: string
+                    trigger:
+                      description: trigger is what started the run.
+                      enum:
+                      - Scheduled
+                      - Manual
+                      type: string
+                  required:
+                  - jobName
+                  - result
+                  - trigger
+                  type: object
+                type: array
+                x-kubernetes-list-type: atomic
               lastScheduleTime:
                 description: lastScheduleTime is when the CronJob last started a backup.
                 format: date-time
                 type: string
               lastSuccessfulTime:
                 description: lastSuccessfulTime is when a backup last completed successfully.
+                format: date-time
+                type: string
+              lastTriggerJob:
+                description: |-
+                  lastTriggerJob is the Job created for the last honoured trigger, or empty
+                  if the trigger was skipped.
+                type: string
+              lastTriggerTime:
+                description: |-
+                  lastTriggerTime is the trigger annotation the operator has already acted
+                  on. A trigger newer than this starts a run; re-reconciling the same one
+                  does not.
                 format: date-time
                 type: string
               observedGeneration:

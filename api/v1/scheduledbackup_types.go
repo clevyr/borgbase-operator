@@ -460,6 +460,64 @@ type ScheduledBackupStatus struct {
 	// active is the number of currently running backup jobs.
 	// +optional
 	Active int32 `json:"active,omitempty"`
+
+	// lastTriggerTime is the trigger annotation the operator has already acted
+	// on. A trigger newer than this starts a run; re-reconciling the same one
+	// does not.
+	// +optional
+	LastTriggerTime *metav1.Time `json:"lastTriggerTime,omitempty"`
+
+	// lastTriggerJob is the Job created for the last honoured trigger, or empty
+	// if the trigger was skipped.
+	// +optional
+	LastTriggerJob string `json:"lastTriggerJob,omitempty"`
+
+	// history is the most recent runs, newest first. Jobs are removed an hour
+	// after they finish and pruned by the history limits, so recording them
+	// here is the only durable record of whether backups have been working.
+	// +listType=atomic
+	// +optional
+	History []BackupRun `json:"history,omitempty"`
+}
+
+// BackupRunResult is the outcome of a single run.
+// +kubebuilder:validation:Enum=Running;Succeeded;Failed
+type BackupRunResult string
+
+const (
+	BackupRunRunning   BackupRunResult = "Running"
+	BackupRunSucceeded BackupRunResult = "Succeeded"
+	BackupRunFailed    BackupRunResult = "Failed"
+)
+
+// BackupRunTrigger is what caused a run.
+// +kubebuilder:validation:Enum=Scheduled;Manual
+type BackupRunTrigger string
+
+const (
+	BackupTriggerScheduled BackupRunTrigger = "Scheduled"
+	BackupTriggerManual    BackupRunTrigger = "Manual"
+)
+
+// BackupRun is one recorded backup attempt.
+type BackupRun struct {
+	// jobName is the Job that ran it. It may no longer exist.
+	JobName string `json:"jobName"`
+
+	// trigger is what started the run.
+	Trigger BackupRunTrigger `json:"trigger"`
+
+	// result is the outcome. Running entries are updated in place as the run
+	// finishes.
+	Result BackupRunResult `json:"result"`
+
+	// startTime is when the run's Job started.
+	// +optional
+	StartTime *metav1.Time `json:"startTime,omitempty"`
+
+	// completionTime is when it finished, absent while it is still running.
+	// +optional
+	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true

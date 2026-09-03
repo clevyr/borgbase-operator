@@ -14,7 +14,12 @@ import (
 //
 // Creates, deletes, spec changes and finalizer changes all still come through,
 // so this cannot strand an object mid-deletion.
-func ignoreOwnStatusWrites() predicate.Predicate {
+//
+// Any annotation named in watchAnnotations also comes through. Annotations do
+// not advance the generation, so without this an object whose only change is a
+// request-carrying annotation would be filtered out and the request never
+// acted on.
+func ignoreOwnStatusWrites(watchAnnotations ...string) predicate.Predicate {
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			if e.ObjectOld == nil || e.ObjectNew == nil {
@@ -26,6 +31,11 @@ func ignoreOwnStatusWrites() predicate.Predicate {
 			}
 			if !equality.Semantic.DeepEqual(e.ObjectOld.GetFinalizers(), e.ObjectNew.GetFinalizers()) {
 				return true
+			}
+			for _, key := range watchAnnotations {
+				if e.ObjectOld.GetAnnotations()[key] != e.ObjectNew.GetAnnotations()[key] {
+					return true
+				}
 			}
 			// Generation only advances on spec changes, so an unchanged
 			// generation means status is all that moved.
