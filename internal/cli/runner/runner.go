@@ -45,6 +45,11 @@ const (
 	ttlSeconds int32 = 600
 
 	pollInterval = 500 * time.Millisecond
+
+	// podStartTimeout bounds how long a pod may sit Pending. A run itself can
+	// take an hour; a pod that has not started in three minutes is stuck on
+	// something a longer wait will not fix.
+	podStartTimeout = 3 * time.Minute
 )
 
 var (
@@ -267,6 +272,10 @@ func (r *Runner) Cleanup(job *batchv1.Job) error {
 func (r *Runner) WaitForPod(ctx context.Context, job *batchv1.Job, timeout time.Duration) (*corev1.Pod, error) {
 	var found *corev1.Pod
 
+	if timeout > podStartTimeout {
+		timeout = podStartTimeout
+	}
+
 	err := wait.PollUntilContextTimeout(ctx, pollInterval, timeout, true,
 		func(ctx context.Context) (bool, error) {
 			var pods corev1.PodList
@@ -286,6 +295,9 @@ func (r *Runner) WaitForPod(ctx context.Context, job *batchv1.Job, timeout time.
 				// Surface a pod that will never start rather than waiting out
 				// the whole timeout on it.
 				if msg := blockedReason(pod); msg != "" {
+					return false, fmt.Errorf("%w: %s", ErrFailed, msg)
+				}
+				if msg := r.blockedByEvent(ctx, pod); msg != "" {
 					return false, fmt.Errorf("%w: %s", ErrFailed, msg)
 				}
 			}
@@ -309,6 +321,46 @@ func blockedReason(pod *corev1.Pod) string {
 		switch cs.State.Waiting.Reason {
 		case "ErrImagePull", "ImagePullBackOff", "CreateContainerConfigError", "InvalidImageName":
 			return cs.State.Waiting.Reason + ": " + cs.State.Waiting.Message
+		}
+	}
+
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodScheduled && cond.Status == corev1.ConditionFalse &&
+			cond.Reason == corev1.PodReasonUnschedulable {
+			return "Unschedulable: " + cond.Message
+		}
+	}
+	return ""
+}
+
+// blockedEventReasons are failures that keep a pod Pending without ever
+// reaching a container status, so they are visible only as events. A missing
+// Secret is the common one: the pod waits forever with nothing to report.
+var blockedEventReasons = map[string]bool{
+	"FailedMount":            true,
+	"FailedAttachVolume":     true,
+	"FailedScheduling":       true,
+	"FailedCreatePodSandBox": true,
+}
+
+// blockedByEvent reports why a pod cannot start, from its events.
+//
+// Events are best-effort: a caller without permission to read them simply gets
+// the slower timeout instead of an error.
+func (r *Runner) blockedByEvent(ctx context.Context, pod *corev1.Pod) string {
+	var events corev1.EventList
+	err := r.Client.List(ctx, &events,
+		client.InNamespace(pod.Namespace),
+		client.MatchingFields{"involvedObject.name": pod.Name},
+	)
+	if err != nil {
+		return ""
+	}
+
+	for i := range events.Items {
+		e := &events.Items[i]
+		if e.Type == corev1.EventTypeWarning && blockedEventReasons[e.Reason] {
+			return e.Reason + ": " + e.Message
 		}
 	}
 	return ""

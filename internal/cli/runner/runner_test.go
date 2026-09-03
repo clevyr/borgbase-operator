@@ -306,3 +306,47 @@ func envOf(c *corev1.Container, name string) *corev1.EnvVar {
 	}
 	return nil
 }
+
+// A pod that cannot mount a Secret stays Pending with nothing in any container
+// status: the reason exists only as an event. Without reading it the CLI waits
+// out the whole timeout with no explanation.
+func TestBlockedByEvent(t *testing.T) {
+	pod := &corev1.Pod{Namespace: testNS, Name: "restore-abc"}
+
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	event := &corev1.Event{
+		Namespace: testNS, Name: "restore-abc.1",
+		Type:   corev1.EventTypeWarning,
+		Reason: "FailedMount",
+		Message: `MountVolume.SetUp failed for volume "db-credentials" : ` +
+			`secret "postgresql-app" not found`,
+		InvolvedObject: corev1.ObjectReference{Namespace: testNS, Name: pod.Name},
+	}
+	r := &Runner{Client: fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(pod, event).
+		WithIndex(&corev1.Event{}, "involvedObject.name", func(o client.Object) []string {
+			return []string{o.(*corev1.Event).InvolvedObject.Name}
+		}).Build()}
+
+	got := r.blockedByEvent(context.Background(), pod)
+	if !strings.Contains(got, "FailedMount") || !strings.Contains(got, "postgresql-app") {
+		t.Errorf("blockedByEvent = %q, want it to name the missing Secret", got)
+	}
+}
+
+// An unschedulable pod is reported from its conditions.
+func TestBlockedReasonUnschedulable(t *testing.T) {
+	pod := &corev1.Pod{Status: corev1.PodStatus{
+		Conditions: []corev1.PodCondition{{
+			Type: corev1.PodScheduled, Status: corev1.ConditionFalse,
+			Reason:  corev1.PodReasonUnschedulable,
+			Message: "0/3 nodes are available: 3 node(s) had volume node affinity conflict.",
+		}},
+	}}
+	if got := blockedReason(pod); !strings.Contains(got, "Unschedulable") {
+		t.Errorf("blockedReason = %q", got)
+	}
+}

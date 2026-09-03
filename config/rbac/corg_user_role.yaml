@@ -50,6 +50,15 @@ rules:
       - get
       - list
       - watch
+  # Why a pod cannot start. A missing Secret keeps it Pending with nothing in
+  # any container status; the reason exists only as an event.
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - get
+      - list
 ---
 # Everything the viewer can do, plus the ability to run backups and restores.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -110,6 +119,13 @@ rules:
       - get
       - list
       - watch
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - get
+      - list
   # corg shell and the streaming restore both exec into the runner's pod.
   - apiGroups:
       - ""
