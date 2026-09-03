@@ -82,6 +82,13 @@ restores snapshots, and drops you into a shell with restic already configured.`,
 		newSuspendCommand(f),
 		newResumeCommand(f),
 		newEnvCommand(f),
+		newSnapshotsCommand(f),
+		newUnlockCommand(f),
+		newCheckCommand(f),
+		newPruneCommand(f),
+		newStatsCommand(f),
+		newShellCommand(f),
+		newExecCommand(f),
 		newVersionCommand(f),
 	}
 
