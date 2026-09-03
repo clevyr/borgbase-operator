@@ -1,0 +1,270 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	borgbasev1 "github.com/clevyr/borgbase-operator/api/v1"
+	"github.com/clevyr/borgbase-operator/internal/backup"
+	"github.com/clevyr/borgbase-operator/internal/controller"
+)
+
+func credentialsSecret(ns, name string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
+		Data: map[string][]byte{
+			controller.KeyResticRepository: []byte("rest:https://id:pw@id.repo.borgbase.com"),
+			controller.KeyResticPassword:   []byte("pw"),
+		},
+	}
+}
+
+func ownedCronJob(sb *borgbasev1.ScheduledBackup) *batchv1.CronJob {
+	cj := &batchv1.CronJob{
+		ObjectMeta: metav1.ObjectMeta{Namespace: sb.Namespace, Name: backup.CronJobName(sb)},
+	}
+	cj.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: borgbasev1.SchemeGroupVersion.String(),
+		Kind:       "ScheduledBackup",
+		Name:       sb.Name,
+		UID:        sb.UID,
+		Controller: ptr(true),
+	}}
+	return cj
+}
+
+func boundCache(sb *borgbasev1.ScheduledBackup) *corev1.PersistentVolumeClaim {
+	return &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Namespace: sb.Namespace, Name: backup.CacheName(sb)},
+		Status:     corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound},
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// healthy builds a fully working backup plus everything it depends on.
+func healthy(t *testing.T) (client.Client, *borgbasev1.ScheduledBackup) {
+	t.Helper()
+	r := readyRepo("prod", "store")
+	sb := readyBackup("prod", "web-files", "store")
+	sched := metav1.NewTime(time.Now().Add(-2 * time.Hour))
+	success := metav1.NewTime(time.Now().Add(-2 * time.Hour).Add(4 * time.Minute))
+	sb.Status.LastScheduleTime = &sched
+	sb.Status.LastSuccessfulTime = &success
+
+	return newClient(t, r, sb, credentialsSecret("prod", r.SecretName()),
+		ownedCronJob(sb), boundCache(sb)), sb
+}
+
+func doctor(t *testing.T, c client.Client, arg string) (string, error) {
+	t.Helper()
+	var buf bytes.Buffer
+	err := runDoctor(context.Background(), c, &buf, "prod", arg)
+	return buf.String(), err
+}
+
+func TestDoctorHealthy(t *testing.T) {
+	c, _ := healthy(t)
+
+	out, err := doctor(t, c, "sb/web-files")
+	if err != nil {
+		t.Fatalf("healthy backup reported unhealthy: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "✖") {
+		t.Errorf("unexpected failure in healthy output:\n%s", out)
+	}
+	for _, want := range []string{
+		"scheduledbackup/web-files",
+		`repository "store" is ready and initialized`,
+		`CronJob "web-files-backup" is owned by this ScheduledBackup`,
+		`cache PVC "web-files-cache" is bound`,
+		"last backup succeeded",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output:\n%s", want, out)
+		}
+	}
+}
+
+// The migration failure the operator refuses to work around.
+func TestDoctorDetectsCronJobAdoptionConflict(t *testing.T) {
+	r := readyRepo("prod", "store")
+	sb := readyBackup("prod", "web-files", "store")
+	cj := ownedCronJob(sb)
+	cj.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: "helm.toolkit.fluxcd.io/v2",
+		Kind:       "HelmRelease",
+		Name:       "web-files",
+		UID:        "uid-helmrelease",
+		Controller: ptr(true),
+	}}
+	c := newClient(t, r, sb, credentialsSecret("prod", r.SecretName()), cj, boundCache(sb))
+
+	out, err := doctor(t, c, "sb/web-files")
+	if !errors.Is(err, ErrUnhealthy) {
+		t.Fatalf("expected ErrUnhealthy, got %v", err)
+	}
+	for _, want := range []string{
+		"is not controlled by this ScheduledBackup",
+		"It is controlled by HelmRelease/web-files.",
+		"delete cronjob/web-files-backup",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output:\n%s", want, out)
+		}
+	}
+}
+
+func TestDoctorDetectsMissingRepository(t *testing.T) {
+	sb := readyBackup("prod", "orphan", "gone")
+	out, err := doctor(t, newClient(t, sb), "sb/orphan")
+
+	if !errors.Is(err, ErrUnhealthy) {
+		t.Fatalf("expected ErrUnhealthy, got %v", err)
+	}
+	if !strings.Contains(out, `repository "gone" does not exist`) {
+		t.Errorf("expected the missing repository to be named:\n%s", out)
+	}
+}
+
+func TestDoctorDetectsIncompleteSecret(t *testing.T) {
+	r := readyRepo("prod", "store")
+	sb := readyBackup("prod", "web-files", "store")
+	secret := credentialsSecret("prod", r.SecretName())
+	delete(secret.Data, controller.KeyResticPassword)
+	c := newClient(t, r, sb, secret, ownedCronJob(sb), boundCache(sb))
+
+	out, err := doctor(t, c, "sb/web-files")
+	if !errors.Is(err, ErrUnhealthy) {
+		t.Fatalf("expected ErrUnhealthy, got %v", err)
+	}
+	if !strings.Contains(out, controller.KeyResticPassword) {
+		t.Errorf("expected the missing key to be named:\n%s", out)
+	}
+}
+
+// A run that started and failed must read as a failure, not as silence.
+func TestDoctorDetectsFailedMostRecentRun(t *testing.T) {
+	r := readyRepo("prod", "store")
+	sb := readyBackup("prod", "web-files", "store")
+	sched := metav1.NewTime(time.Now().Add(-1 * time.Hour))
+	success := metav1.NewTime(time.Now().Add(-49 * time.Hour))
+	sb.Status.LastScheduleTime = &sched
+	sb.Status.LastSuccessfulTime = &success
+	c := newClient(t, r, sb, credentialsSecret("prod", r.SecretName()), ownedCronJob(sb), boundCache(sb))
+
+	out, err := doctor(t, c, "sb/web-files")
+	if !errors.Is(err, ErrUnhealthy) {
+		t.Fatalf("expected ErrUnhealthy, got %v", err)
+	}
+	if !strings.Contains(out, "did not succeed") {
+		t.Errorf("expected the failed run to be reported:\n%s", out)
+	}
+}
+
+// A backup running right now must not be mistaken for a failed run.
+func TestDoctorIgnoresRunInProgress(t *testing.T) {
+	r := readyRepo("prod", "store")
+	sb := readyBackup("prod", "web-files", "store")
+	sched := metav1.NewTime(time.Now().Add(-2 * time.Minute))
+	success := metav1.NewTime(time.Now().Add(-24 * time.Hour))
+	sb.Status.LastScheduleTime = &sched
+	sb.Status.LastSuccessfulTime = &success
+	sb.Status.Active = 1
+	c := newClient(t, r, sb, credentialsSecret("prod", r.SecretName()), ownedCronJob(sb), boundCache(sb))
+
+	out, err := doctor(t, c, "sb/web-files")
+	if err != nil {
+		t.Fatalf("a running backup should not fail doctor: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "running now") {
+		t.Errorf("expected the active run to be reported:\n%s", out)
+	}
+}
+
+// Suspension is deliberate, so it warns but must not fail.
+func TestDoctorSuspendedWarnsWithoutFailing(t *testing.T) {
+	c, sb := healthy(t)
+	sb.Spec.Suspend = true
+	if err := c.Update(context.Background(), sb); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := doctor(t, c, "sb/web-files")
+	if err != nil {
+		t.Fatalf("a suspended backup should warn, not fail: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "backups are suspended") {
+		t.Errorf("expected a suspension warning:\n%s", out)
+	}
+}
+
+func TestDoctorReportsFailedInitJob(t *testing.T) {
+	r := newRepo("prod", "store")
+	r.Status.Conditions = []metav1.Condition{{
+		Type: borgbasev1.RepositoryConditionReady, Status: metav1.ConditionFalse,
+		Reason: "Initializing", Message: "waiting for restic init",
+	}}
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "store-init"},
+		Status: batchv1.JobStatus{
+			Failed: 3,
+			Conditions: []batchv1.JobCondition{{
+				Type: batchv1.JobFailed, Status: corev1.ConditionTrue,
+				Message: "Job has reached the specified backoff limit",
+			}},
+		},
+	}
+	job.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: borgbasev1.SchemeGroupVersion.String(), Kind: "Repository",
+		Name: r.Name, UID: r.UID, Controller: ptr(true),
+	}}
+	c := newClient(t, r, job, credentialsSecret("prod", r.SecretName()))
+
+	out, err := doctor(t, c, "repo/store")
+	if !errors.Is(err, ErrUnhealthy) {
+		t.Fatalf("expected ErrUnhealthy, got %v", err)
+	}
+	for _, want := range []string{
+		"is not initialized",
+		"waiting for restic init",
+		`init Job "store-init" has failed 3 time(s)`,
+		"Job has reached the specified backoff limit",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output:\n%s", want, out)
+		}
+	}
+}
+
+func TestDoctorChecksWholeNamespace(t *testing.T) {
+	c, _ := healthy(t)
+	out, err := doctor(t, c, "")
+	if err != nil {
+		t.Fatalf("unexpected failure: %v\n%s", err, out)
+	}
+	for _, want := range []string{"repository/store", "scheduledbackup/web-files"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output:\n%s", want, out)
+		}
+	}
+}
+
+func TestDoctorEmptyNamespace(t *testing.T) {
+	out, err := doctor(t, newClient(t), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "No resources found") {
+		t.Errorf("unexpected output: %q", out)
+	}
+}
