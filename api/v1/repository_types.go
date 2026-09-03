@@ -41,7 +41,11 @@ const (
 type RepositorySpec struct {
 	// interval is how often to re-reconcile against the BorgBase API, which
 	// also refreshes usage and quota in the status.
+	//
+	// The pattern matters: the API server stores this as a plain string, and a
+	// value Go cannot parse would break decoding of every Repository at once.
 	// +kubebuilder:default:="1h"
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$`
 	// +optional
 	Interval *metav1.Duration `json:"interval,omitempty"`
 
@@ -66,10 +70,10 @@ type RepositorySpec struct {
 	// looks the repository up; it will never create one, and it will never
 	// generate a password. This is the migration path.
 	//
-	// The field is immutable: repointing a Repository at a different BorgBase
-	// repo would silently orphan the original backups.
+	// The field is immutable, and cannot be added after a repository has been
+	// created for this resource: repointing a Repository at a different
+	// BorgBase repo would silently orphan the original backups.
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]{4,32}$`
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="existingRepositoryID is immutable"
 	// +optional
 	ExistingRepositoryID string `json:"existingRepositoryID,omitempty"`
 
@@ -79,7 +83,8 @@ type RepositorySpec struct {
 	// way to read them.
 	//
 	// The operator reads this Secret and never writes to it, so it remains a
-	// disaster-recovery copy of the password.
+	// disaster-recovery copy of the password. It must therefore be a different
+	// Secret from secretName.
 	// +optional
 	PasswordSecretRef *corev1.SecretKeySelector `json:"passwordSecretRef,omitempty"`
 
@@ -95,25 +100,31 @@ type RepositorySpec struct {
 	// +optional
 	Region string `json:"region,omitempty"`
 
-	// quotaGiB caps repository size in GiB. Unset means no quota.
+	// quotaGiB caps repository size. Unset means no quota. The value is passed
+	// to BorgBase's quota field unchanged, and BorgBase reports sizes in GB, so
+	// treat the unit as whatever BorgBase means by it. Reconciled on every
+	// pass, so changing it here updates the repository.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	QuotaGiB *int32 `json:"quotaGiB,omitempty"`
 
 	// alertDays makes BorgBase alert when the repository has not been written
-	// to for this many days. Unset leaves the account default.
+	// to for this many days. Unset leaves the account default. Reconciled on
+	// every pass.
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	AlertDays *int32 `json:"alertDays,omitempty"`
 
 	// appendOnly prevents clients from deleting existing data, which protects
 	// backups from a compromised host. `restic forget --prune` cannot run against
-	// an append-only repository.
+	// an append-only repository. Reconciled on every pass.
 	// +optional
 	AppendOnly bool `json:"appendOnly,omitempty"`
 
 	// secretName is the Secret the operator writes RESTIC_REPOSITORY and
-	// RESTIC_PASSWORD into. Defaults to "<name>-borgbase".
+	// RESTIC_PASSWORD into. Defaults to "<name>-borgbase". The operator only
+	// writes to Secrets it created itself, so this must not name a Secret that
+	// something else manages.
 	// +kubebuilder:validation:MaxLength=253
 	// +optional
 	SecretName string `json:"secretName,omitempty"`
@@ -170,6 +181,9 @@ type RepositoryStatus struct {
 // +kubebuilder:printcolumn:name="Usage",type="string",JSONPath=".status.currentUsage"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:validation:XValidation:rule="!has(self.spec.existingRepositoryID) || has(self.spec.passwordSecretRef)",message="passwordSecretRef is required when adopting an existing repository, otherwise its snapshots would be unreadable"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.spec.existingRepositoryID) || (has(self.spec.existingRepositoryID) && self.spec.existingRepositoryID == oldSelf.spec.existingRepositoryID)",message="existingRepositoryID cannot be changed or removed once set"
+// +kubebuilder:validation:XValidation:rule="has(oldSelf.spec.existingRepositoryID) || !has(self.spec.existingRepositoryID) || !has(oldSelf.status) || !has(oldSelf.status.repositoryID)",message="cannot adopt a different repository after one has been created for this resource"
+// +kubebuilder:validation:XValidation:rule="!has(self.spec.passwordSecretRef) || !has(self.spec.secretName) || self.spec.secretName != self.spec.passwordSecretRef.name",message="secretName must not be the passwordSecretRef Secret; the operator never writes to the seed"
 
 // Repository is the Schema for the repositories API.
 type Repository struct {

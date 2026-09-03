@@ -19,6 +19,9 @@ type fakeAPI struct {
 	// calls records operation names in order.
 	calls []string
 
+	// edits records the options passed to each Edit call.
+	edits []borgbase.EditOptions
+
 	// getErr, if set, is returned by Get instead of a lookup.
 	getErr error
 }
@@ -84,14 +87,40 @@ func (f *fakeAPI) Add(_ context.Context, opts borgbase.AddOptions) (*borgbase.Re
 	return r, nil
 }
 
-func (f *fakeAPI) Edit(_ context.Context, id string, _ borgbase.EditOptions) (*borgbase.Repo, error) {
+// Edit applies the options, so a test can assert both that the controller
+// asked for a change and that it asked for the right one.
+func (f *fakeAPI) Edit(_ context.Context, id string, opts borgbase.EditOptions) (*borgbase.Repo, error) {
 	f.record("Edit")
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if r, ok := f.repos[id]; ok {
-		return r, nil
+	r, ok := f.repos[id]
+	if !ok {
+		return nil, borgbase.ErrNotFound
 	}
-	return nil, borgbase.ErrNotFound
+	f.edits = append(f.edits, opts)
+	if opts.QuotaEnabled != nil {
+		r.QuotaEnabled = *opts.QuotaEnabled
+	}
+	if opts.Quota != nil {
+		r.Quota = *opts.Quota
+	}
+	if opts.AlertDays != nil {
+		r.AlertDays = *opts.AlertDays
+	}
+	if opts.AppendOnly != nil {
+		r.AppendOnly = *opts.AppendOnly
+	}
+	return r, nil
+}
+
+// lastEdit returns the options of the most recent Edit call.
+func (f *fakeAPI) lastEdit() borgbase.EditOptions {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.edits) == 0 {
+		return borgbase.EditOptions{}
+	}
+	return f.edits[len(f.edits)-1]
 }
 
 func (f *fakeAPI) Delete(_ context.Context, id string) error {

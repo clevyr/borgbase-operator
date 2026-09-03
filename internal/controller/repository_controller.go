@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -91,7 +92,7 @@ type RepositoryReconciler struct {
 // +kubebuilder:rbac:groups=borgbase.clevyr.com,resources=repositories,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=borgbase.clevyr.com,resources=repositories/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=borgbase.clevyr.com,resources=repositories/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
@@ -106,14 +107,18 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	api, err := r.apiFor(ctx, &repo)
-	if err != nil {
-		r.Recorder.Eventf(&repo, nil, corev1.EventTypeWarning, "APITokenUnavailable", "Reconcile", "%s", err.Error())
-		return ctrl.Result{}, err
-	}
-
+	// Deletion is handled before the API token is resolved. Under the default
+	// Retain policy nothing calls BorgBase at all, so a missing or rotated
+	// token must not be able to strand the object in Terminating.
 	if !repo.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, r.finalize(ctx, &repo, api)
+		statusBase := repo.DeepCopy()
+		if err := r.finalize(ctx, &repo); err != nil {
+			if statusErr := r.patchStatus(ctx, &repo, statusBase); statusErr != nil {
+				logger.Error(statusErr, "Failed to update status after a failed finalize")
+			}
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
 	}
 
 	if !controllerutil.ContainsFinalizer(&repo, FinalizerName) {
@@ -124,14 +129,37 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
-	if repo.Spec.Suspend {
-		logger.V(1).Info("reconciliation suspended")
-		return ctrl.Result{}, nil
-	}
-
 	// Captured after the finalizer patch so the status patch is computed
 	// against what the object looks like now.
 	statusBase := repo.DeepCopy()
+
+	// Suspending also predates the token lookup: the point of it is to stop the
+	// controller touching anything while a problem is investigated.
+	if repo.Spec.Suspend {
+		logger.V(1).Info("Reconciliation suspended")
+		r.setCondition(&repo, metav1.Condition{
+			Type:    borgbasev1.RepositoryConditionReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  "Suspended",
+			Message: "reconciliation is paused by spec.suspend",
+		})
+		return ctrl.Result{}, r.patchStatus(ctx, &repo, statusBase)
+	}
+
+	api, err := r.apiFor(ctx, &repo)
+	if err != nil {
+		r.setCondition(&repo, metav1.Condition{
+			Type:    borgbasev1.RepositoryConditionReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  "APITokenUnavailable",
+			Message: err.Error(),
+		})
+		r.Recorder.Eventf(&repo, nil, corev1.EventTypeWarning, "APITokenUnavailable", "Reconcile", "%s", err.Error())
+		if statusErr := r.patchStatus(ctx, &repo, statusBase); statusErr != nil {
+			logger.Error(statusErr, "Failed to update status after an API token failure")
+		}
+		return ctrl.Result{}, err
+	}
 
 	result, err := r.reconcile(ctx, &repo, api)
 	if err != nil {
@@ -144,7 +172,7 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		r.setCondition(&repo, meta)
 		r.Recorder.Eventf(&repo, nil, corev1.EventTypeWarning, "ReconcileFailed", "Reconcile", "%s", err.Error())
 		if statusErr := r.patchStatus(ctx, &repo, statusBase); statusErr != nil {
-			logger.Error(statusErr, "updating status after a failed reconcile")
+			logger.Error(statusErr, "Failed to update status after a failed reconcile")
 		}
 		return ctrl.Result{}, err
 	}
@@ -158,6 +186,11 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 func (r *RepositoryReconciler) reconcile(
 	ctx context.Context, repo *borgbasev1.Repository, api borgbase.API,
 ) (ctrl.Result, error) {
+	// Read before status is overwritten below. This is the only evidence that
+	// the resource has already been through a successful pass, and therefore
+	// that a password exists somewhere even if the Secret has gone missing.
+	known := repo.Status.RepositoryID != "" || repo.Status.Initialized
+
 	remote, err := r.resolveRepo(ctx, repo, api)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -171,16 +204,20 @@ func (r *RepositoryReconciler) reconcile(
 			"%w: repository %s has format %q", borgbase.ErrNotRestic, remote.ID, remote.Format)
 	}
 
+	if remote, err = r.reconcileSettings(ctx, repo, remote, api); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	repo.Status.RepositoryID = remote.ID
 	repo.Status.Server = remote.Host()
-	repo.Status.CurrentUsage = formatBytes(remote.CurrentUsage)
+	repo.Status.CurrentUsage = formatUsage(remote.CurrentUsage)
 	if remote.QuotaEnabled {
-		repo.Status.Quota = formatGiB(remote.Quota)
+		repo.Status.Quota = formatQuota(remote.Quota)
 	} else {
 		repo.Status.Quota = ""
 	}
 
-	if err := r.reconcileSecret(ctx, repo, remote); err != nil {
+	if err := r.reconcileSecret(ctx, repo, remote, known); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -237,6 +274,15 @@ func (r *RepositoryReconciler) resolveRepo(
 	// rather than quietly provisioning an empty repository beside real
 	// backups, so there is no fallback to creation on this path.
 	if id := repo.Spec.ExistingRepositoryID; id != "" {
+		// The CRD forbids changing this field, but an object written before
+		// that rule existed, or restored from a backup of etcd, can still
+		// disagree with what was recorded. Repointing would orphan the
+		// snapshots the recorded repository holds.
+		if recorded := repo.Status.RepositoryID; recorded != "" && recorded != id {
+			return nil, fmt.Errorf(
+				"spec.existingRepositoryID is %s but this resource already manages repository %s; "+
+					"delete and recreate the Repository if the change is intended", id, recorded)
+		}
 		remote, err := api.Get(ctx, id)
 		if err != nil {
 			return nil, fmt.Errorf("adopting repository %s: %w", id, err)
@@ -267,7 +313,7 @@ func (r *RepositoryReconciler) resolveRepo(
 	remote, err = api.Add(ctx, borgbase.AddOptions{
 		Name:       name,
 		Region:     repo.Spec.Region,
-		Quota:      quotaBytes(repo.Spec.QuotaGiB),
+		Quota:      int64Ptr(repo.Spec.QuotaGiB),
 		AlertDays:  int64Ptr(repo.Spec.AlertDays),
 		AppendOnly: repo.Spec.AppendOnly,
 	})
@@ -279,13 +325,59 @@ func (r *RepositoryReconciler) resolveRepo(
 	return remote, nil
 }
 
+// reconcileSettings brings the repository's mutable settings in line with the
+// spec, and returns the repository as it stands afterwards.
+//
+// Only fields that actually differ are sent: repoEdit applies whatever it
+// receives, so sending everything on every pass would overwrite a setting made
+// in the BorgBase UI that the spec says nothing about.
+func (r *RepositoryReconciler) reconcileSettings(
+	ctx context.Context, repo *borgbasev1.Repository, remote *borgbase.Repo, api borgbase.API,
+) (*borgbase.Repo, error) {
+	var opts borgbase.EditOptions
+
+	wantQuota := repo.Spec.QuotaGiB != nil
+	if wantQuota != remote.QuotaEnabled {
+		opts.QuotaEnabled = ptr.To(wantQuota)
+	}
+	if wantQuota {
+		// Send the value alongside whenever the quota is being switched on, so
+		// the repository is never left enabled with a stale limit.
+		if q := int64(*repo.Spec.QuotaGiB); q != remote.Quota || opts.QuotaEnabled != nil {
+			opts.Quota = ptr.To(q)
+		}
+	}
+	if days := int64Ptr(repo.Spec.AlertDays); days != nil && *days != remote.AlertDays {
+		opts.AlertDays = days
+	}
+	if repo.Spec.AppendOnly != remote.AppendOnly {
+		opts.AppendOnly = ptr.To(repo.Spec.AppendOnly)
+	}
+
+	if opts.IsZero() {
+		return remote, nil
+	}
+
+	updated, err := api.Edit(ctx, remote.ID, opts)
+	if err != nil {
+		return nil, fmt.Errorf("updating settings on repository %s: %w", remote.ID, err)
+	}
+	r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "SettingsUpdated", "Edit",
+		"Updated settings on BorgBase repository %s", remote.ID)
+	return updated, nil
+}
+
 // reconcileSecret writes the credentials Secret.
 //
 // The restic password is the encryption key for every snapshot in the
 // repository. Once a password exists anywhere it is reused verbatim and never
 // regenerated: rotating it would render every existing backup unreadable.
+//
+// known says whether this resource has already completed a pass, and therefore
+// whether a password must already exist somewhere even though this Secret does
+// not currently hold one.
 func (r *RepositoryReconciler) reconcileSecret(
-	ctx context.Context, repo *borgbasev1.Repository, remote *borgbase.Repo,
+	ctx context.Context, repo *borgbasev1.Repository, remote *borgbase.Repo, known bool,
 ) error {
 	url, err := remote.ResticURL()
 	if err != nil {
@@ -314,13 +406,15 @@ func (r *RepositoryReconciler) reconcileSecret(
 	}
 
 	if password == "" {
-		// Refuse to invent a password for a repository that already holds
-		// data: its snapshots were written under a password we do not have,
-		// and a new one would not decrypt them.
-		if repo.Status.Adopted || remote.CurrentUsage > 0 {
+		// Refuse to invent a password for a repository that has been used
+		// before: its snapshots were written under a password we do not have,
+		// and a new one would not decrypt them. Usage is not enough on its own,
+		// because a freshly initialized repository still reports zero.
+		if repo.Status.Adopted || known || remote.CurrentUsage > 0 {
 			return fmt.Errorf(
-				"repository %s already contains data but no password is available; "+
-					"set spec.passwordSecretRef to the existing RESTIC_PASSWORD", remote.ID)
+				"repository %s has already been provisioned but no password is available; "+
+					"restore Secret %s or set spec.passwordSecretRef to the existing RESTIC_PASSWORD",
+				remote.ID, name)
 		}
 		if password, err = secrets.GeneratePassword(); err != nil {
 			return err
@@ -332,7 +426,7 @@ func (r *RepositoryReconciler) reconcileSecret(
 		Name:      name,
 		Namespace: repo.Namespace,
 		Labels: map[string]string{
-			"app.kubernetes.io/managed-by": "borgbase-operator",
+			labelManagedBy: managedByValue,
 		},
 		Type: corev1.SecretTypeOpaque,
 		// Written as Data rather than StringData: StringData is write-only,
@@ -362,7 +456,7 @@ func (r *RepositoryReconciler) reconcileSecret(
 			"Generated a new restic password in Secret %s; back it up, it cannot be recovered", name)
 	}
 	if op != "" {
-		log.FromContext(ctx).Info("reconciled credentials secret", "secret", name, "operation", op)
+		log.FromContext(ctx).Info("Reconciled credentials Secret", "secret", name, "operation", op)
 	}
 
 	repo.Status.SecretName = name
@@ -381,27 +475,61 @@ func (r *RepositoryReconciler) createOrPatch(
 		return "created", nil
 	}
 
-	unchanged := true
-	for k, v := range desired.Data {
-		if string(existing.Data[k]) != string(v) {
-			unchanged = false
-			break
-		}
-	}
-	if unchanged && len(existing.OwnerReferences) == len(desired.OwnerReferences) {
-		return "", nil
+	// Never write into a Secret this operator did not create. spec.secretName
+	// is free-form, so a typo could otherwise point it at the SOPS seed or an
+	// app's own credentials, and under the Delete policy an ownerReference
+	// would then garbage collect them.
+	if existing.Labels[labelManagedBy] != managedByValue {
+		return "", fmt.Errorf(
+			"secret %s/%s already exists and is not managed by this operator; "+
+				"set spec.secretName to a name the operator owns",
+			existing.Namespace, existing.Name)
 	}
 
 	updated := existing.DeepCopy()
+	if updated.Labels == nil {
+		updated.Labels = map[string]string{}
+	}
+	maps.Copy(updated.Labels, desired.Labels)
 	if updated.Data == nil {
 		updated.Data = map[string][]byte{}
 	}
 	maps.Copy(updated.Data, desired.Data)
-	updated.OwnerReferences = desired.OwnerReferences
+	syncControllerRef(updated, desired)
+
+	if equality.Semantic.DeepEqual(existing, updated) {
+		return "", nil
+	}
 	if err := r.Update(ctx, updated); err != nil {
 		return "", fmt.Errorf("updating secret %s: %w", desired.Name, err)
 	}
 	return "updated", nil
+}
+
+// syncControllerRef makes obj's controller reference match desired's, leaving
+// any other ownerReference alone.
+//
+// The deletion policy can be flipped either way, so this both adds the
+// reference and removes it. Comparing the references themselves rather than
+// counting them is what makes the removal happen at all.
+func syncControllerRef(obj *corev1.Secret, desired *corev1.Secret) {
+	want := metav1.GetControllerOf(desired)
+	have := metav1.GetControllerOf(obj)
+
+	switch {
+	case want == nil && have == nil:
+		return
+	case want != nil && have != nil && have.UID == want.UID && have.Name == want.Name:
+		return
+	}
+
+	refs := slices.DeleteFunc(slices.Clone(obj.OwnerReferences), func(o metav1.OwnerReference) bool {
+		return o.Controller != nil && *o.Controller
+	})
+	if want != nil {
+		refs = append(refs, *want)
+	}
+	obj.OwnerReferences = refs
 }
 
 // reconcileInitJob runs `restic init` against the repository, returning how
@@ -439,16 +567,21 @@ func (r *RepositoryReconciler) reconcileInitJob(
 			// Wait before replacing it. Deleting the exhausted Job immediately
 			// fires a watch event that recreates it at once, turning the retry
 			// into a hot loop against a repository that is already failing.
+			r.setInitializing(repo, "InitFailed", fmt.Sprintf(
+				"restic init failed in Job %s; on an adopted repository this usually means "+
+					"passwordSecretRef holds the wrong password. Retrying in %s", name, initRetryDelay))
 			if wait := initRetryDelay - time.Since(*failedAt); wait > 0 {
 				return wait, nil
 			}
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "InitFailed", "Initialize",
-				"restic init failed; retrying")
+				"restic init failed in Job %s; if this repository was adopted, check that "+
+					"passwordSecretRef holds its original password. Retrying", name)
 			if err := r.deleteJob(ctx, &job); err != nil {
 				return 0, err
 			}
 			return initRetryDelay, nil
 		}
+		r.setInitializing(repo, "Initializing", fmt.Sprintf("waiting for init Job %s to complete", name))
 		return 15 * time.Second, nil
 
 	case !apierrors.IsNotFound(err):
@@ -466,7 +599,20 @@ func (r *RepositoryReconciler) reconcileInitJob(
 		return 0, fmt.Errorf("creating init job: %w", err)
 	}
 	r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "Initializing", "Initialize", "Started init job %s", name)
+	r.setInitializing(repo, "Initializing", fmt.Sprintf("started init Job %s", name))
 	return 15 * time.Second, nil
+}
+
+// setInitializing records that the repository is not yet initialized, so the
+// condition says something before `restic init` has succeeded rather than being
+// absent until it does.
+func (r *RepositoryReconciler) setInitializing(repo *borgbasev1.Repository, reason, message string) {
+	r.setCondition(repo, metav1.Condition{
+		Type:    borgbasev1.RepositoryConditionInitialized,
+		Status:  metav1.ConditionFalse,
+		Reason:  reason,
+		Message: message,
+	})
 }
 
 func (r *RepositoryReconciler) buildInitJob(repo *borgbasev1.Repository, name string) batchv1.Job {
@@ -474,9 +620,9 @@ func (r *RepositoryReconciler) buildInitJob(repo *borgbasev1.Repository, name st
 		Name:      name,
 		Namespace: repo.Namespace,
 		Labels: map[string]string{
-			"app.kubernetes.io/name":       repo.Name,
-			"app.kubernetes.io/component":  "init",
-			"app.kubernetes.io/managed-by": "borgbase-operator",
+			"app.kubernetes.io/name":      repo.Name,
+			"app.kubernetes.io/component": "init",
+			labelManagedBy:                managedByValue,
 		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit:            ptr.To(int32(3)),
@@ -503,6 +649,7 @@ func (r *RepositoryReconciler) buildInitJob(repo *borgbasev1.Repository, name st
 						}},
 						SecurityContext: &corev1.SecurityContext{
 							AllowPrivilegeEscalation: ptr.To(false),
+							Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 						},
 						// Without requests the pod is BestEffort and is the
 						// first thing evicted under node pressure, which would
@@ -576,21 +723,35 @@ func jobFailedAt(job *batchv1.Job) *time.Time {
 }
 
 // finalize handles deletion according to the deletion policy.
-func (r *RepositoryReconciler) finalize(
-	ctx context.Context, repo *borgbasev1.Repository, api borgbase.API,
-) error {
+//
+// The BorgBase client is built only on the path that actually needs it, so a
+// Retain deletion succeeds even when the API token is unavailable.
+func (r *RepositoryReconciler) finalize(ctx context.Context, repo *borgbasev1.Repository) error {
 	if !controllerutil.ContainsFinalizer(repo, FinalizerName) {
 		return nil
 	}
 
-	if repo.Spec.DeletionPolicy == borgbasev1.DeletionPolicyDelete && repo.Status.RepositoryID != "" {
+	switch {
+	case repo.Spec.DeletionPolicy == borgbasev1.DeletionPolicyDelete && repo.Status.RepositoryID != "":
+		api, err := r.apiFor(ctx, repo)
+		if err != nil {
+			r.setCondition(repo, metav1.Condition{
+				Type:    borgbasev1.RepositoryConditionReady,
+				Status:  metav1.ConditionFalse,
+				Reason:  "APITokenUnavailable",
+				Message: err.Error(),
+			})
+			r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "APITokenUnavailable", "Delete", "%s", err.Error())
+			return err
+		}
 		if err := api.Delete(ctx, repo.Status.RepositoryID); err != nil && !errors.Is(err, borgbase.ErrNotFound) {
 			r.Recorder.Eventf(repo, nil, corev1.EventTypeWarning, "DeleteFailed", "Delete", "%s", err.Error())
 			return fmt.Errorf("deleting repository %s: %w", repo.Status.RepositoryID, err)
 		}
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryDeleted", "Delete",
 			"Deleted BorgBase repository %s and all its snapshots", repo.Status.RepositoryID)
-	} else if repo.Status.RepositoryID != "" {
+
+	case repo.Status.RepositoryID != "":
 		r.Recorder.Eventf(repo, nil, corev1.EventTypeNormal, "RepositoryRetained", "Retain",
 			"Retained BorgBase repository %s; delete it manually if it is no longer needed",
 			repo.Status.RepositoryID)

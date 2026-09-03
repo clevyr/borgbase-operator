@@ -7,10 +7,13 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -378,4 +381,269 @@ func getSecretOrErr(c client.Client, name string) (*corev1.Secret, error) {
 	var s corev1.Secret
 	err := c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: name}, &s)
 	return &s, err
+}
+
+// Retain never calls BorgBase, so a missing or rotated API token must not be
+// able to strand the object in Terminating. Resolving the token before the
+// policy check used to do exactly that.
+func TestRetainDeletionDoesNotNeedAPIToken(t *testing.T) {
+	api := newFakeAPI()
+	r, c := newHarness(t, api, repositoryFixture(nil))
+	reconcileN(t, r, 2)
+
+	key := types.NamespacedName{Namespace: testNS, Name: resticName}
+	var repo borgbasev1.Repository
+	if err := c.Get(context.Background(), key, &repo); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Delete(context.Background(), &repo); err != nil {
+		t.Fatal(err)
+	}
+
+	// The token Secret disappears, as it would after a rotation.
+	if err := c.Delete(context.Background(), &corev1.Secret{
+		Name: tokenName, Namespace: tokenNS,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcileN(t, r, 1)
+	if err := c.Get(context.Background(), key, &repo); !apierrors.IsNotFound(err) {
+		t.Errorf("Retain deletion was blocked by the missing token: %v", err)
+	}
+}
+
+// The Delete path genuinely needs the token, so it must fail loudly and keep
+// the finalizer rather than dropping it and orphaning the repository.
+func TestDeletePolicyWithoutTokenKeepsFinalizer(t *testing.T) {
+	api := newFakeAPI()
+	repo := repositoryFixture(func(r *borgbasev1.Repository) {
+		r.Spec.DeletionPolicy = borgbasev1.DeletionPolicyDelete
+	})
+	r, c := newHarness(t, api, repo)
+	reconcileN(t, r, 2)
+
+	key := types.NamespacedName{Namespace: testNS, Name: resticName}
+	var got borgbasev1.Repository
+	if err := c.Get(context.Background(), key, &got); err != nil {
+		t.Fatal(err)
+	}
+	id := got.Status.RepositoryID
+	if err := c.Delete(context.Background(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Delete(context.Background(), &corev1.Secret{
+		Name: tokenName, Namespace: tokenNS,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.Reconcile(context.Background(),
+		ctrl.Request{Namespace: testNS, Name: resticName}); err == nil {
+		t.Fatal("expected an error when the Delete policy cannot reach BorgBase")
+	}
+	if err := c.Get(context.Background(), key, &got); err != nil {
+		t.Errorf("the object should still exist while deletion cannot proceed: %v", err)
+	}
+	if _, ok := api.repos[id]; !ok {
+		t.Error("the repository was deleted despite the failure")
+	}
+}
+
+// Suspending should say so, rather than leaving a stale Ready=True behind.
+func TestSuspendReportsCondition(t *testing.T) {
+	api := newFakeAPI()
+	repo := repositoryFixture(func(r *borgbasev1.Repository) { r.Spec.Suspend = true })
+	r, c := newHarness(t, api, repo)
+	reconcileN(t, r, 1)
+
+	var got borgbasev1.Repository
+	if err := c.Get(context.Background(),
+		types.NamespacedName{Namespace: testNS, Name: resticName}, &got); err != nil {
+		t.Fatal(err)
+	}
+	cond := apimeta.FindStatusCondition(got.Status.Conditions, borgbasev1.RepositoryConditionReady)
+	if cond == nil || cond.Reason != "Suspended" {
+		t.Errorf("Ready condition = %+v, want reason Suspended", cond)
+	}
+}
+
+// The credentials Secret going missing after initialization must never produce
+// a fresh password: the snapshots already in the repository were written under
+// the old one, and a new one cannot decrypt them. Usage alone is not a
+// sufficient guard, because a just-initialized repository still reports zero.
+func TestNeverInventsPasswordOnceProvisioned(t *testing.T) {
+	api := newFakeAPI()
+	r, c := newHarness(t, api, repositoryFixture(nil))
+	reconcileN(t, r, 2)
+
+	secret := getSecret(t, c, "restic-borgbase")
+	original := string(secret.Data[KeyResticPassword])
+	if original == "" {
+		t.Fatal("no password was written")
+	}
+	if err := c.Delete(context.Background(), secret); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.Reconcile(context.Background(),
+		ctrl.Request{Namespace: testNS, Name: resticName}); err == nil {
+		t.Fatal("expected an error rather than a newly invented password")
+	}
+	if _, err := getSecretOrErr(c, "restic-borgbase"); !apierrors.IsNotFound(err) {
+		after := getSecret(t, c, "restic-borgbase")
+		t.Errorf("a replacement Secret was written with password %q, want none",
+			string(after.Data[KeyResticPassword]))
+	}
+}
+
+// A recorded repository and a spec that names a different one cannot both be
+// right, and guessing would orphan whichever set of snapshots lost.
+func TestRejectsIDMismatchBetweenSpecAndStatus(t *testing.T) {
+	api := newFakeAPI(&borgbase.Repo{
+		ID: "a1b2c3d4", Name: testNS, Format: borgbase.FormatRestic, Htpasswd: "t",
+	})
+	repo := repositoryFixture(func(r *borgbasev1.Repository) {
+		r.Spec.ExistingRepositoryID = "a1b2c3d4"
+		r.Spec.PasswordSecretRef = &corev1.SecretKeySelector{Name: seedSecret, Key: KeyResticPassword}
+		r.Status.RepositoryID = "zzzzzzzz"
+	})
+	seed := &corev1.Secret{
+		Name: seedSecret, Namespace: testNS,
+		Data: map[string][]byte{KeyResticPassword: []byte("pw")},
+	}
+
+	r, _ := newHarness(t, api, repo, seed)
+	if _, err := r.Reconcile(context.Background(),
+		ctrl.Request{Namespace: testNS, Name: resticName}); err == nil {
+		t.Fatal("expected an error when the spec and status disagree about the repository")
+	}
+}
+
+// Settings the spec cares about are reconciled, so changing a quota in Git
+// actually reaches BorgBase.
+func TestSettingsDriftIsCorrected(t *testing.T) {
+	api := newFakeAPI(&borgbase.Repo{
+		ID: testRepoID, Name: testNS, Format: borgbase.FormatRestic, Htpasswd: "t",
+		Quota: 50, QuotaEnabled: true, AlertDays: 1,
+	})
+	repo := repositoryFixture(func(r *borgbasev1.Repository) {
+		r.Status.RepositoryID = testRepoID
+		r.Spec.QuotaGiB = ptr.To(int32(100))
+		r.Spec.AlertDays = ptr.To(int32(3))
+		r.Spec.AppendOnly = true
+		r.Spec.PasswordSecretRef = &corev1.SecretKeySelector{Name: seedSecret, Key: KeyResticPassword}
+	})
+	seed := &corev1.Secret{
+		Name: seedSecret, Namespace: testNS,
+		Data: map[string][]byte{KeyResticPassword: []byte("pw")},
+	}
+
+	r, _ := newHarness(t, api, repo, seed)
+	reconcileN(t, r, 1)
+
+	if !api.called("Edit") {
+		t.Fatal("settings drift did not reach BorgBase")
+	}
+	edit := api.lastEdit()
+	if edit.Quota == nil || *edit.Quota != 100 {
+		t.Errorf("quota = %v, want 100", edit.Quota)
+	}
+	if edit.AlertDays == nil || *edit.AlertDays != 3 {
+		t.Errorf("alertDays = %v, want 3", edit.AlertDays)
+	}
+	if edit.AppendOnly == nil || !*edit.AppendOnly {
+		t.Errorf("appendOnly = %v, want true", edit.AppendOnly)
+	}
+	// quotaEnabled already matched, so it must not be sent again.
+	if edit.QuotaEnabled != nil {
+		t.Errorf("quotaEnabled = %v, want it left alone", *edit.QuotaEnabled)
+	}
+}
+
+// repoEdit applies whatever it is sent, so a matching repository must not be
+// edited at all: doing so would overwrite settings made in the BorgBase UI.
+func TestNoEditWhenSettingsMatch(t *testing.T) {
+	api := newFakeAPI(&borgbase.Repo{
+		ID: testRepoID, Name: testNS, Format: borgbase.FormatRestic, Htpasswd: "t",
+		Quota: 100, QuotaEnabled: true, AlertDays: 3, AppendOnly: true,
+	})
+	repo := repositoryFixture(func(r *borgbasev1.Repository) {
+		r.Status.RepositoryID = testRepoID
+		r.Spec.QuotaGiB = ptr.To(int32(100))
+		r.Spec.AlertDays = ptr.To(int32(3))
+		r.Spec.AppendOnly = true
+		r.Spec.PasswordSecretRef = &corev1.SecretKeySelector{Name: seedSecret, Key: KeyResticPassword}
+	})
+	seed := &corev1.Secret{
+		Name: seedSecret, Namespace: testNS,
+		Data: map[string][]byte{KeyResticPassword: []byte("pw")},
+	}
+
+	r, _ := newHarness(t, api, repo, seed)
+	reconcileN(t, r, 2)
+
+	if api.called("Edit") {
+		t.Error("an unchanged repository was edited anyway")
+	}
+}
+
+// spec.secretName is free-form, so it must not be usable to write into, or
+// under the Delete policy garbage collect, a Secret something else owns.
+func TestRefusesToWriteUnmanagedSecret(t *testing.T) {
+	api := newFakeAPI()
+	repo := repositoryFixture(func(r *borgbasev1.Repository) {
+		r.Spec.SecretName = "app-credentials"
+	})
+	foreign := &corev1.Secret{
+		Name: "app-credentials", Namespace: testNS,
+		Data: map[string][]byte{"DB_PASSWORD": []byte("do not touch")},
+	}
+
+	r, c := newHarness(t, api, repo, foreign)
+	if _, err := r.Reconcile(context.Background(),
+		ctrl.Request{Namespace: testNS, Name: resticName}); err == nil {
+		t.Fatal("expected a refusal to write into an unmanaged Secret")
+	}
+
+	after := getSecret(t, c, "app-credentials")
+	if string(after.Data["DB_PASSWORD"]) != "do not touch" {
+		t.Error("the foreign Secret was modified")
+	}
+	if _, ok := after.Data[KeyResticPassword]; ok {
+		t.Error("credentials were written into the foreign Secret")
+	}
+	if len(after.OwnerReferences) != 0 {
+		t.Error("the operator took ownership of a Secret it did not create")
+	}
+}
+
+// Flipping the policy has to add and remove the ownerReference, or a Secret
+// that was once disposable stays garbage-collectable forever.
+func TestOwnerReferenceFollowsDeletionPolicy(t *testing.T) {
+	api := newFakeAPI()
+	repo := repositoryFixture(func(r *borgbasev1.Repository) {
+		r.Spec.DeletionPolicy = borgbasev1.DeletionPolicyDelete
+	})
+	r, c := newHarness(t, api, repo)
+	reconcileN(t, r, 2)
+
+	if got := metav1.GetControllerOf(getSecret(t, c, "restic-borgbase")); got == nil {
+		t.Fatal("Delete policy should own the credentials Secret")
+	}
+
+	key := types.NamespacedName{Namespace: testNS, Name: resticName}
+	var live borgbasev1.Repository
+	if err := c.Get(context.Background(), key, &live); err != nil {
+		t.Fatal(err)
+	}
+	live.Spec.DeletionPolicy = borgbasev1.DeletionPolicyRetain
+	if err := c.Update(context.Background(), &live); err != nil {
+		t.Fatal(err)
+	}
+	reconcileN(t, r, 1)
+
+	if got := metav1.GetControllerOf(getSecret(t, c, "restic-borgbase")); got != nil {
+		t.Errorf("Retain should have released the Secret, still owned by %s", got.Name)
+	}
 }

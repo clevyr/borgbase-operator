@@ -97,8 +97,19 @@ type AddOptions struct {
 }
 
 // EditOptions are the arguments to repoEdit. Note the absence of Format.
+//
+// Every field is a pointer so that "leave this alone" is expressible: repoEdit
+// applies whatever it is sent, so a zero value would silently clear a setting
+// the spec says nothing about.
 type EditOptions struct {
-	Quota      *int64
-	AlertDays  *int64
-	AppendOnly bool
+	Quota        *int64
+	QuotaEnabled *bool
+	AlertDays    *int64
+	AppendOnly   *bool
+}
+
+// IsZero reports whether these options would change nothing, so the caller can
+// skip the API round trip entirely.
+func (o EditOptions) IsZero() bool {
+	return o.Quota == nil && o.QuotaEnabled == nil && o.AlertDays == nil && o.AppendOnly == nil
 }

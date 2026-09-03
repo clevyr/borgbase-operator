@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -63,6 +65,12 @@ const repoFields = `
 	server { hostname region }
 `
 
+// repoNotFound matches the GraphQL error messages that mean "this repository
+// is absent", as opposed to any other thing the API says does not exist.
+var repoNotFound = regexp.MustCompile(`(?i)repo(sitory)?\b[^.;]*(not found|does not exist)` +
+	`|\bno\s+repo(sitory)?\b[^.;]*\bfound\b` +
+	`|(not found|does not exist)[^.;]*\brepo(sitory)?\b`)
+
 type graphQLError struct {
 	Message string `json:"message"`
 }
@@ -94,6 +102,12 @@ func (c *Client) execute(ctx context.Context, query string, vars map[string]any,
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Include a little of the body: a bare "401 Unauthorized" gives no hint
+		// whether the token is wrong, expired, or lacks the needed scope.
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+		if len(snippet) > 0 {
+			return fmt.Errorf("borgbase: unexpected status %s: %s", resp.Status, strings.TrimSpace(string(snippet)))
+		}
 		return fmt.Errorf("borgbase: unexpected status %s", resp.Status)
 	}
 
@@ -108,9 +122,11 @@ func (c *Client) execute(ctx context.Context, query string, vars map[string]any,
 		}
 		joined := strings.Join(msgs, "; ")
 		// BorgBase reports a missing repository as a GraphQL error rather than
-		// a null result, so map it onto ErrNotFound for callers.
-		if strings.Contains(strings.ToLower(joined), "not found") ||
-			strings.Contains(strings.ToLower(joined), "does not exist") {
+		// a null result, so map it onto ErrNotFound for callers. The match
+		// requires the message to be about a repository: a bare "does not
+		// exist" also covers things like an unknown region, and treating that
+		// as "absent" would send the caller on to create a duplicate.
+		if repoNotFound.MatchString(joined) {
 			return fmt.Errorf("%w: %s", ErrNotFound, joined)
 		}
 		return fmt.Errorf("borgbase: %s", joined)
@@ -257,16 +273,18 @@ func (c *Client) Edit(ctx context.Context, id string, opts EditOptions) (*Repo, 
 		) { repoEdited {` + repoFields + `} }
 	}`
 
-	vars := map[string]any{
-		"id":           id,
-		"quotaEnabled": opts.Quota != nil,
-		"appendOnly":   opts.AppendOnly,
-	}
+	vars := map[string]any{"id": id}
 	if opts.Quota != nil {
 		vars["quota"] = *opts.Quota
 	}
+	if opts.QuotaEnabled != nil {
+		vars["quotaEnabled"] = *opts.QuotaEnabled
+	}
 	if opts.AlertDays != nil {
 		vars["alertDays"] = *opts.AlertDays
+	}
+	if opts.AppendOnly != nil {
+		vars["appendOnly"] = *opts.AppendOnly
 	}
 
 	var data struct {
@@ -286,5 +304,20 @@ func (c *Client) Edit(ctx context.Context, id string, opts EditOptions) (*Repo, 
 // Delete permanently removes a repository and every snapshot in it.
 func (c *Client) Delete(ctx context.Context, id string) error {
 	query := `mutation repoDelete($id: String!) { repoDelete(id: $id) { ok } }`
-	return c.execute(ctx, query, map[string]any{"id": id}, nil)
+
+	var data struct {
+		RepoDelete struct {
+			OK *bool `json:"ok"`
+		} `json:"repoDelete"`
+	}
+	if err := c.execute(ctx, query, map[string]any{"id": id}, &data); err != nil {
+		return err
+	}
+	// ok=false with no errors array means the deletion did not happen. Treating
+	// that as success would drop the finalizer and leave the repository behind
+	// with nothing left pointing at it.
+	if ok := data.RepoDelete.OK; ok != nil && !*ok {
+		return fmt.Errorf("borgbase: repoDelete reported ok=false for repository %s", id)
+	}
+	return nil
 }

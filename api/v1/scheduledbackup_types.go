@@ -33,6 +33,16 @@ const (
 	DatabaseEngineMariaDB DatabaseEngine = "mariadb"
 )
 
+// Mount paths dumpdb reads credentials from. These are dumpdb's own defaults,
+// fixed per engine, and the operator does not pass --secret-mount, so the
+// Secret has to appear here whatever it is called.
+const (
+	// CNPGMountPath is where `dumpdb cnpg` looks for its credentials.
+	CNPGMountPath = "/postgresql-app"
+	// MariaDBMountPath is where `dumpdb mariadb` looks for its credentials.
+	MariaDBMountPath = "/mariadb"
+)
+
 // Condition types reported on a ScheduledBackup.
 const (
 	// ScheduledBackupConditionReady is true once the CronJob has been created
@@ -42,6 +52,7 @@ const (
 
 // BackupSource is one thing to back up. Sources render, in order, into the
 // backup script as individual `restic backup` invocations.
+// +kubebuilder:validation:XValidation:rule="self.type == 'files' ? (!has(self.database) && !has(self.extraArgs)) : (!has(self.path) && !has(self.exclude))",message="path and exclude are only valid for files sources; database and extraArgs only for database sources"
 type BackupSource struct {
 	// type selects what this source reads.
 	// +required
@@ -50,6 +61,7 @@ type BackupSource struct {
 	// tag is the restic tag applied to snapshots from this source. Defaults to
 	// "db" for database sources and "files" for file sources.
 	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_.-]+$`
 	// +optional
 	Tag string `json:"tag,omitempty"`
 
@@ -68,7 +80,8 @@ type BackupSource struct {
 	Database string `json:"database,omitempty"`
 
 	// extraArgs are appended verbatim to the dump command, after a `--`
-	// separator, for flags the dump tool passes through to the client.
+	// separator, for flags the dump tool passes through to the client. They are
+	// not quoted: this is a passthrough, so the caller owns the quoting.
 	// +optional
 	ExtraArgs []string `json:"extraArgs,omitempty"`
 }
@@ -94,6 +107,7 @@ func (s BackupSource) EffectivePath() string {
 
 // Retention configures `restic forget --prune`. Every unset field is omitted
 // from the command, so at least one must be set.
+// +kubebuilder:validation:XValidation:rule="has(self.last) || has(self.hourly) || has(self.daily) || has(self.weekly) || has(self.monthly) || has(self.yearly)",message="at least one retention field must be set; omit retention entirely to skip forgetting"
 type Retention struct {
 	// last keeps the N most recent snapshots regardless of age.
 	// +kubebuilder:validation:Minimum=1
@@ -127,13 +141,18 @@ type Retention struct {
 }
 
 // DatabaseSpec wires database credentials into the backup pod.
+// +kubebuilder:validation:XValidation:rule="self.engine != 'mariadb' || (has(self.host) && has(self.name) && has(self.user))",message="host, name and user are required for the mariadb engine"
 type DatabaseSpec struct {
 	// engine selects the credential wiring.
 	// +required
 	Engine DatabaseEngine `json:"engine"`
 
-	// secretName is the Secret mounted at /<secretName> for the dump tool to
-	// read. Defaults to "postgresql-app" for cnpg and "mariadb" for mariadb.
+	// secretName is the Secret holding the credentials. Defaults to
+	// "postgresql-app" for cnpg and "mariadb" for mariadb.
+	//
+	// Whatever it is called, it is mounted at dumpdb's default path for the
+	// engine (/postgresql-app for cnpg, /mariadb for mariadb), because the
+	// operator does not pass --secret-mount.
 	// +optional
 	SecretName string `json:"secretName,omitempty"`
 
@@ -156,9 +175,21 @@ func (d *DatabaseSpec) EffectiveSecretName() string {
 		return d.SecretName
 	}
 	if d.Engine == DatabaseEngineMariaDB {
-		return "mariadb"
+		return MariaDBMountPath[1:]
 	}
-	return "postgresql-app"
+	return CNPGMountPath[1:]
+}
+
+// MountPath returns where the credentials Secret must be mounted.
+//
+// This is dumpdb's own default for the engine, not a path derived from the
+// Secret name: dumpdb is invoked without --secret-mount, so mounting anywhere
+// else leaves the dump unable to find its credentials.
+func (d *DatabaseSpec) MountPath() string {
+	if d.Engine == DatabaseEngineMariaDB {
+		return MariaDBMountPath
+	}
+	return CNPGMountPath
 }
 
 // VolumeSpec attaches an existing PersistentVolumeClaim to back up files from.
@@ -169,6 +200,7 @@ type VolumeSpec struct {
 
 	// mountPath is where the claim is mounted, which is also the working
 	// directory for file sources. Defaults to "/<existingClaim>".
+	// +kubebuilder:validation:XValidation:rule="self != '/cache'",message="mountPath must not be /cache, which is where the restic cache volume is mounted"
 	// +optional
 	MountPath string `json:"mountPath,omitempty"`
 
@@ -189,7 +221,8 @@ func (v *VolumeSpec) EffectiveMountPath() string {
 // CacheSpec configures the restic cache volume. A persistent cache makes
 // `restic forget --prune` dramatically cheaper.
 type CacheSpec struct {
-	// enabled turns the cache PVC on. Defaults to true.
+	// enabled turns the cache PVC on. Defaults to true. Setting it to false
+	// deletes a cache PVC the operator created.
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 
@@ -229,7 +262,10 @@ type HealthchecksSpec struct {
 	PingKeySecretRef *corev1.SecretKeySelector `json:"pingKeySecretRef,omitempty"`
 
 	// slug identifies the check within the project. Defaults to the namespace.
-	// Must be unique within the project or pings fail with 409.
+	//
+	// Two backups in one namespace must therefore set distinct slugs; the
+	// operator reports SlugConflict otherwise, because sharing a check would
+	// let one backup's success mask the other's failure.
 	// +kubebuilder:validation:Pattern=`^[a-z0-9_-]+$`
 	// +kubebuilder:validation:MaxLength=100
 	// +optional
@@ -258,10 +294,11 @@ type ScheduledBackupSpec struct {
 	RepositoryRef corev1.LocalObjectReference `json:"repositoryRef"`
 
 	// schedule is either a standard five-field cron expression, used verbatim,
-	// or one of the shorthands "@hourly", "@daily", "@weekly", "@monthly",
-	// "@every <duration>". Shorthands are jittered from a hash of this
-	// resource's identity so that copy-pasted backups do not stampede; the
-	// result is reported in status.effectiveSchedule.
+	// or one of the shorthands "@hourly", "@daily" (or "@midnight"), "@weekly",
+	// "@monthly", "@yearly" (or "@annually"), "@every <duration>". Shorthands
+	// are jittered from a hash of this resource's identity so that copy-pasted
+	// backups do not stampede; the result is reported in
+	// status.effectiveSchedule.
 	// +required
 	Schedule string `json:"schedule"`
 
@@ -275,6 +312,7 @@ type ScheduledBackupSpec struct {
 	Suspend bool `json:"suspend,omitempty"`
 
 	// concurrencyPolicy for the generated CronJob.
+	// +kubebuilder:validation:Enum=Allow;Forbid;Replace
 	// +kubebuilder:default:=Forbid
 	// +optional
 	ConcurrencyPolicy batchv1.ConcurrencyPolicy `json:"concurrencyPolicy,omitempty"`
@@ -285,6 +323,7 @@ type ScheduledBackupSpec struct {
 	Image string `json:"image,omitempty"`
 
 	// sources lists what to back up. Mutually exclusive with script.
+	// +kubebuilder:validation:MinItems=1
 	// +optional
 	Sources []BackupSource `json:"sources,omitempty"`
 
@@ -310,11 +349,16 @@ type ScheduledBackupSpec struct {
 	// Set it to 0 to pass no flag at all, restoring restic's default of
 	// failing immediately.
 	// +kubebuilder:default:="5m"
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$`
 	// +optional
 	RetryLock *metav1.Duration `json:"retryLock,omitempty"`
 
 	// env adds environment variables to the backup container. Intended as the
 	// companion to script; typed fields cover the common cases.
+	//
+	// Entries take precedence over everything the operator sets, including
+	// RESTIC_REPOSITORY and RESTIC_PASSWORD from the credentials Secret, since
+	// a container's env overrides its envFrom.
 	// +optional
 	Env map[string]string `json:"env,omitempty"`
 
@@ -338,8 +382,24 @@ type ScheduledBackupSpec struct {
 	// scheduled next to the data it reads: hard affinity to the app when a
 	// volume is attached, hard affinity to mariadb, or soft affinity to the
 	// CloudNativePG primary.
+	//
+	// The derived rules encode a fleet labelling convention: the app's pods are
+	// expected to carry app.kubernetes.io/name=<namespace> and
+	// app.kubernetes.io/controller=app, and mariadb's to carry
+	// app.kubernetes.io/name=mariadb. Set this field for anything labelled
+	// differently, or the backup pod will not schedule.
 	// +optional
 	Affinity *corev1.Affinity `json:"affinity,omitempty"`
+
+	// podSecurityContext overrides the backup pod's security context. The
+	// operator's default sets only the RuntimeDefault seccomp profile; set
+	// runAsNonRoot, runAsUser or fsGroup here for namespaces enforcing the
+	// restricted Pod Security Standard.
+	//
+	// It is not defaulted to runAsNonRoot because a files backup has to be able
+	// to read the app's data, whose ownership the operator cannot know.
+	// +optional
+	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
 
 	// podLabels adds labels to the backup pod, for network policies and the
 	// like. The mariadb-client label is added automatically for mariadb.
@@ -399,6 +459,7 @@ type ScheduledBackupStatus struct {
 // +kubebuilder:printcolumn:name="Suspended",type="boolean",JSONPath=".spec.suspend"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:validation:XValidation:rule="has(self.spec.sources) != has(self.spec.script)",message="exactly one of spec.sources or spec.script must be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.spec.sources) || !self.spec.sources.exists(s, s.type == 'files') || has(self.spec.volume)",message="a files source needs spec.volume; without it restic would back up the container's own filesystem"
 
 // ScheduledBackup is the Schema for the scheduledbackups API.
 type ScheduledBackup struct {

@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"k8s.io/utils/ptr"
 )
 
 // stub serves canned GraphQL responses and records the requests it received.
@@ -153,7 +155,9 @@ func TestEditNeverSendsFormat(t *testing.T) {
 	c, done := s.server(t)
 	defer done()
 
-	if _, err := c.Edit(context.Background(), "a1b2c3d4", EditOptions{}); err != nil {
+	if _, err := c.Edit(context.Background(), "a1b2c3d4", EditOptions{
+		AppendOnly: ptr.To(true),
+	}); err != nil {
 		t.Fatalf("Edit() error = %v", err)
 	}
 	// `format` legitimately appears in the response selection set; what must
@@ -252,5 +256,95 @@ func TestNonOKStatusIsAnError(t *testing.T) {
 
 	if _, err := c.Get(context.Background(), "x"); err == nil {
 		t.Fatal("expected an error for a non-200 response")
+	}
+}
+
+// repoEdit applies whatever it is sent, so a field the spec says nothing about
+// must not be sent at all: doing so would clear a setting made in the BorgBase
+// UI every time the operator reconciled.
+func TestEditOmitsUnsetFields(t *testing.T) {
+	s := &stub{response: `{"data":{"repoEdit":{"repoEdited":{
+		"id":"a1b2c3d4","format":"restic","htpasswd":"t","server":{"hostname":"h"}}}}}`}
+	c, done := s.server(t)
+	defer done()
+
+	if _, err := c.Edit(context.Background(), "a1b2c3d4", EditOptions{
+		AlertDays: ptr.To(int64(3)),
+	}); err != nil {
+		t.Fatalf("Edit() error = %v", err)
+	}
+
+	vars := s.lastVars()
+	if vars["alertDays"] != float64(3) {
+		t.Errorf("alertDays = %v, want 3", vars["alertDays"])
+	}
+	for _, absent := range []string{"quota", "quotaEnabled", "appendOnly"} {
+		if _, present := vars[absent]; present {
+			t.Errorf("%s was sent despite being unset", absent)
+		}
+	}
+}
+
+// ok=false with no errors array means the repository is still there. Reporting
+// success would drop the finalizer and orphan it.
+func TestDeleteChecksOK(t *testing.T) {
+	s := &stub{response: `{"data":{"repoDelete":{"ok":false}}}`}
+	c, done := s.server(t)
+	defer done()
+
+	if err := c.Delete(context.Background(), "a1b2c3d4"); err == nil {
+		t.Fatal("expected an error when repoDelete reports ok=false")
+	}
+
+	s.response = `{"data":{"repoDelete":{"ok":true}}}`
+	if err := c.Delete(context.Background(), "a1b2c3d4"); err != nil {
+		t.Errorf("Delete() error = %v, want success for ok=true", err)
+	}
+}
+
+// "does not exist" is not by itself a missing repository. Classifying an
+// unrelated failure as ErrNotFound would send FindByName on to create a second
+// repository beside the real one.
+func TestNotFoundHeuristicIsNarrow(t *testing.T) {
+	tests := []struct {
+		message string
+		want    bool
+	}{
+		{"Repository not found", true},
+		{"repo does not exist", true},
+		{"No repository found with that id", true},
+		{"Region does not exist", false},
+		{"Server not found", false},
+		{"Invalid token", false},
+	}
+	for _, tt := range tests {
+		s := &stub{response: `{"errors":[{"message":"` + tt.message + `"}]}`}
+		c, done := s.server(t)
+		_, err := c.Get(context.Background(), "x")
+		done()
+
+		if got := errors.Is(err, ErrNotFound); got != tt.want {
+			t.Errorf("%q: ErrNotFound = %v, want %v (err = %v)", tt.message, got, tt.want, err)
+		}
+	}
+}
+
+// A bare status line gives no hint whether a token is wrong, expired or
+// under-scoped, so the body comes along.
+func TestNonOKStatusIncludesBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, "token lacks repoAdd scope")
+	}))
+	defer srv.Close()
+	c := NewClient("bad")
+	c.Endpoint = srv.URL
+
+	_, err := c.Get(context.Background(), "x")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "repoAdd scope") {
+		t.Errorf("error = %v, want it to carry the response body", err)
 	}
 }
