@@ -219,3 +219,10 @@ Releases publish a container image to `ghcr.io/clevyr/borgbase-operator` and
 the rendered manifests as an OCI artifact at
 `ghcr.io/clevyr/borgbase-operator-manifests`, which Flux consumes via an
 `OCIRepository`.
+
+## corg, the CLI
+
+`corg` runs backups on demand, explains why one is not running, and restores
+snapshots. It is the same binary as the `kubectl corg` plugin.
+
+See [docs/corg.md](docs/corg.md) for the full command reference.
