@@ -187,6 +187,13 @@ func checkRepository(ctx context.Context, c client.Client, repo *borgbasev1.Repo
 	checkGeneration(r, repo.Generation, repo.Status.ObservedGeneration)
 	checkCondition(r, repo.Status.Conditions, borgbasev1.RepositoryConditionReady, "repository")
 
+	// A conflicted Repository is held back before it touches anything, so every
+	// check below would only restate the same cause in a different voice.
+	if cond := FindCondition(repo.Status.Conditions, borgbasev1.RepositoryConditionReady); cond != nil &&
+		cond.Reason == "RepositoryConflict" {
+		return r
+	}
+
 	switch {
 	case repo.Status.Initialized:
 		r.add(levelOK, "restic repository is initialized")

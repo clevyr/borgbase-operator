@@ -317,3 +317,26 @@ func TestDoctorReportsAFailedRunFromHistory(t *testing.T) {
 		t.Errorf("expected the failure to be reported:\n%s", out)
 	}
 }
+
+func TestDoctorStopsAtARepositoryConflict(t *testing.T) {
+	repo := newRepo(testNS)
+	repo.Status.Conditions = []metav1.Condition{{
+		Type: borgbasev1.RepositoryConditionReady, Status: metav1.ConditionFalse,
+		Reason:  "RepositoryConflict",
+		Message: "BorgBase repository abcd1234 is already managed by Repository other/incumbent",
+	}}
+	c := newClient(t, repo)
+
+	out, err := doctor(t, c, "repo/"+testRepoName)
+	if err == nil {
+		t.Fatalf("a conflicted repository should fail:\n%s", out)
+	}
+	if !strings.Contains(out, "other/incumbent") {
+		t.Errorf("expected the incumbent to be named:\n%s", out)
+	}
+	for _, unwanted := range []string{"not initialized", "does not exist", "no BorgBase repository ID"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("expected no %q consequence of the conflict:\n%s", unwanted, out)
+		}
+	}
+}
