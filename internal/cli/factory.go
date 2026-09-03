@@ -103,6 +103,15 @@ func (f *Factory) Namespace() (string, error) {
 	return ns, err
 }
 
+// ListNamespace is the namespace to list in: empty means every namespace, which
+// is how the client expresses a cluster-wide list.
+func (f *Factory) ListNamespace() (string, error) {
+	if f.allNamespaces {
+		return "", nil
+	}
+	return f.Namespace()
+}
+
 // AllNamespaces reports whether -A was passed.
 func (f *Factory) AllNamespaces() bool { return f.allNamespaces }
 
