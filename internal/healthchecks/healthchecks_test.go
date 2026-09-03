@@ -18,8 +18,8 @@ func testConfig() Config {
 
 func pingKeyRef() *corev1.SecretKeySelector {
 	return &corev1.SecretKeySelector{
-		LocalObjectReference: corev1.LocalObjectReference{Name: "healthchecks-ping-key"},
-		Key:                  "PING_KEY",
+		Name: "healthchecks-ping-key",
+		Key:  "PING_KEY",
 	}
 }
 
@@ -94,8 +94,8 @@ func TestSlugMode(t *testing.T) {
 func TestUUIDAdoptionMode(t *testing.T) {
 	r := Resolve(testConfig(), Overrides{
 		UUIDRef: &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{Name: "restic-envs"},
-			Key:                  "CHECK_UUID",
+			Name: "restic-envs",
+			Key:  "CHECK_UUID",
 		},
 	}, "myapp-prod")
 

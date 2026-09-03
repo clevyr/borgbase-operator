@@ -95,11 +95,9 @@ func BuildCachePVC(sb *borgbasev1.ScheduledBackup, cfg Config) (*corev1.Persiste
 	}
 
 	pvc := &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      CacheName(sb),
-			Namespace: sb.Namespace,
-			Labels:    commonLabels(sb),
-		},
+		Name:      CacheName(sb),
+		Namespace: sb.Namespace,
+		Labels:    commonLabels(sb),
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{accessMode},
 			Resources: corev1.VolumeResourceRequirements{
@@ -155,7 +153,7 @@ func BuildCronJob(
 		Image:        image,
 		Command:      buildCommand(sb, cfg, script),
 		Env:          env,
-		EnvFrom:      []corev1.EnvFromSource{{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: repo.SecretName()}}}},
+		EnvFrom:      []corev1.EnvFromSource{{SecretRef: &corev1.SecretEnvSource{Name: repo.SecretName()}}},
 		VolumeMounts: mounts,
 		Resources:    resources(sb),
 		SecurityContext: &corev1.SecurityContext{
@@ -169,11 +167,9 @@ func BuildCronJob(
 	}
 
 	return &batchv1.CronJob{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      sb.Name,
-			Namespace: sb.Namespace,
-			Labels:    commonLabels(sb),
-		},
+		Name:      sb.Name,
+		Namespace: sb.Namespace,
+		Labels:    commonLabels(sb),
 		Spec: batchv1.CronJobSpec{
 			Schedule:                   schedule,
 			TimeZone:                   timeZone(sb),
@@ -318,10 +314,8 @@ func buildVolumes(sb *borgbasev1.ScheduledBackup) ([]corev1.Volume, []corev1.Vol
 
 	if cacheEnabled(sb) {
 		volumes = append(volumes, corev1.Volume{
-			Name: cacheVolume,
-			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: CacheName(sb)},
-			},
+			Name:                  cacheVolume,
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: CacheName(sb)},
 		})
 		mounts = append(mounts, corev1.VolumeMount{Name: cacheVolume, MountPath: cacheMountPath})
 	}
@@ -329,10 +323,8 @@ func buildVolumes(sb *borgbasev1.ScheduledBackup) ([]corev1.Volume, []corev1.Vol
 	if db := sb.Spec.Database; db != nil {
 		name := db.EffectiveSecretName()
 		volumes = append(volumes, corev1.Volume{
-			Name: "db-credentials",
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{SecretName: name},
-			},
+			Name:   "db-credentials",
+			Secret: &corev1.SecretVolumeSource{SecretName: name},
 		})
 		// dumpdb looks for the credentials at a path named after the Secret.
 		mounts = append(mounts, corev1.VolumeMount{
@@ -343,11 +335,9 @@ func buildVolumes(sb *borgbasev1.ScheduledBackup) ([]corev1.Volume, []corev1.Vol
 	if v := sb.Spec.Volume; v != nil {
 		volumes = append(volumes, corev1.Volume{
 			Name: "data",
-			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: v.ExistingClaim,
-					ReadOnly:  v.ReadOnly,
-				},
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: v.ExistingClaim,
+				ReadOnly:  v.ReadOnly,
 			},
 		})
 		mounts = append(mounts, corev1.VolumeMount{

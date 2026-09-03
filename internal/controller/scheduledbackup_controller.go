@@ -245,7 +245,7 @@ func (r *ScheduledBackupReconciler) backupsForRepository(
 	requests := make([]reconcile.Request, 0, len(list.Items))
 	for _, sb := range list.Items {
 		requests = append(requests, reconcile.Request{
-			NamespacedName: types.NamespacedName{Namespace: sb.Namespace, Name: sb.Name},
+			Namespace: sb.Namespace, Name: sb.Name,
 		})
 	}
 	return requests

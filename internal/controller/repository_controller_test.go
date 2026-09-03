@@ -7,7 +7,6 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -46,8 +45,8 @@ func newHarness(t *testing.T, api *fakeAPI, objs ...client.Object) (*RepositoryR
 	scheme := testScheme(t)
 
 	all := append([]client.Object{&corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: tokenName, Namespace: tokenNS},
-		Data:       map[string][]byte{"token": []byte("test-token")},
+		Name: tokenName, Namespace: tokenNS,
+		Data: map[string][]byte{"token": []byte("test-token")},
 	}}, objs...)
 
 	c := fake.NewClientBuilder().
@@ -69,7 +68,7 @@ func newHarness(t *testing.T, api *fakeAPI, objs ...client.Object) (*RepositoryR
 
 func repositoryFixture(mutate func(*borgbasev1.Repository)) *borgbasev1.Repository {
 	repo := &borgbasev1.Repository{
-		ObjectMeta: metav1.ObjectMeta{Name: resticName, Namespace: testNS},
+		Name: resticName, Namespace: testNS,
 		Spec: borgbasev1.RepositorySpec{
 			Region:         "us",
 			DeletionPolicy: borgbasev1.DeletionPolicyRetain,
@@ -83,7 +82,7 @@ func repositoryFixture(mutate func(*borgbasev1.Repository)) *borgbasev1.Reposito
 
 func reconcileN(t *testing.T, r *RepositoryReconciler, n int) {
 	t.Helper()
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNS, Name: resticName}}
+	req := ctrl.Request{Namespace: testNS, Name: resticName}
 	for i := range n {
 		if _, err := r.Reconcile(context.Background(), req); err != nil {
 			t.Fatalf("reconcile %d: %v", i, err)
@@ -131,13 +130,13 @@ func TestAdoptionNeverCreates(t *testing.T) {
 	repo := repositoryFixture(func(r *borgbasev1.Repository) {
 		r.Spec.ExistingRepositoryID = "a1b2c3d4"
 		r.Spec.PasswordSecretRef = &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{Name: seedSecret},
-			Key:                  KeyResticPassword,
+			Name: seedSecret,
+			Key:  KeyResticPassword,
 		}
 	})
 	seed := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: seedSecret, Namespace: testNS},
-		Data:       map[string][]byte{KeyResticPassword: []byte("existing-password-from-sops")},
+		Name: seedSecret, Namespace: testNS,
+		Data: map[string][]byte{KeyResticPassword: []byte("existing-password-from-sops")},
 	}
 
 	r, c := newHarness(t, api, repo, seed)
@@ -182,7 +181,7 @@ func TestRefusesToInventPasswordForNonEmptyRepository(t *testing.T) {
 
 	r, _ := newHarness(t, api, repo)
 	_, err := r.Reconcile(context.Background(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNS, Name: resticName}})
+		ctrl.Request{Namespace: testNS, Name: resticName})
 	if err == nil {
 		t.Fatal("expected an error for a non-empty repository with no password")
 	}
@@ -197,18 +196,18 @@ func TestRejectsNonResticRepository(t *testing.T) {
 	repo := repositoryFixture(func(r *borgbasev1.Repository) {
 		r.Spec.ExistingRepositoryID = "borgrepo"
 		r.Spec.PasswordSecretRef = &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{Name: seedSecret},
-			Key:                  KeyResticPassword,
+			Name: seedSecret,
+			Key:  KeyResticPassword,
 		}
 	})
 	seed := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: seedSecret, Namespace: testNS},
-		Data:       map[string][]byte{KeyResticPassword: []byte("pw")},
+		Name: seedSecret, Namespace: testNS,
+		Data: map[string][]byte{KeyResticPassword: []byte("pw")},
 	}
 
 	r, _ := newHarness(t, api, repo, seed)
 	_, err := r.Reconcile(context.Background(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Namespace: testNS, Name: resticName}})
+		ctrl.Request{Namespace: testNS, Name: resticName})
 	if err == nil {
 		t.Fatal("expected an error for a non-restic repository")
 	}

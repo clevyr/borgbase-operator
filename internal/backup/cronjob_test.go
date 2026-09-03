@@ -8,7 +8,6 @@ import (
 	borgbasev1 "github.com/clevyr/borgbase-operator/api/v1"
 	"github.com/clevyr/borgbase-operator/internal/healthchecks"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 )
 
@@ -32,13 +31,13 @@ func testConfig() Config {
 
 func testRepo() *borgbasev1.Repository {
 	return &borgbasev1.Repository{
-		ObjectMeta: metav1.ObjectMeta{Name: containerName, Namespace: testNS},
+		Name: containerName, Namespace: testNS,
 	}
 }
 
 func testBackup(mutate func(*borgbasev1.ScheduledBackup)) *borgbasev1.ScheduledBackup {
 	sb := &borgbasev1.ScheduledBackup{
-		ObjectMeta: metav1.ObjectMeta{Name: containerName, Namespace: testNS},
+		Name: containerName, Namespace: testNS,
 		Spec: borgbasev1.ScheduledBackupSpec{
 			RepositoryRef: corev1.LocalObjectReference{Name: containerName},
 			Schedule:      testSchedule,
@@ -46,8 +45,8 @@ func testBackup(mutate func(*borgbasev1.ScheduledBackup)) *borgbasev1.ScheduledB
 			Sources:       []borgbasev1.BackupSource{{Type: borgbasev1.SourceTypeCNPG}},
 			Healthchecks: &borgbasev1.HealthchecksSpec{
 				PingKeySecretRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: "healthchecks-ping-key"},
-					Key:                  "PING_KEY",
+					Name: "healthchecks-ping-key",
+					Key:  "PING_KEY",
 				},
 			},
 		},

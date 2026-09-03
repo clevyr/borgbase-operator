@@ -287,12 +287,10 @@ func (r *RepositoryReconciler) reconcileSecret(
 	}
 
 	desired := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: repo.Namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "borgbase-operator",
-			},
+		Name:      name,
+		Namespace: repo.Namespace,
+		Labels: map[string]string{
+			"app.kubernetes.io/managed-by": "borgbase-operator",
 		},
 		Type: corev1.SecretTypeOpaque,
 		// Written as Data rather than StringData: StringData is write-only,
@@ -417,14 +415,12 @@ func (r *RepositoryReconciler) reconcileInitJob(
 
 func (r *RepositoryReconciler) buildInitJob(repo *borgbasev1.Repository, name string) batchv1.Job {
 	return batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: repo.Namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/name":       repo.Name,
-				"app.kubernetes.io/component":  "init",
-				"app.kubernetes.io/managed-by": "borgbase-operator",
-			},
+		Name:      name,
+		Namespace: repo.Namespace,
+		Labels: map[string]string{
+			"app.kubernetes.io/name":       repo.Name,
+			"app.kubernetes.io/component":  "init",
+			"app.kubernetes.io/managed-by": "borgbase-operator",
 		},
 		Spec: batchv1.JobSpec{
 			BackoffLimit:            ptr.To(int32(3)),
@@ -446,7 +442,7 @@ func (r *RepositoryReconciler) buildInitJob(repo *borgbasev1.Repository, name st
 						Command: []string{"sh", "-c", "restic cat config >/dev/null 2>&1 || restic init"},
 						EnvFrom: []corev1.EnvFromSource{{
 							SecretRef: &corev1.SecretEnvSource{
-								LocalObjectReference: corev1.LocalObjectReference{Name: repo.SecretName()},
+								Name: repo.SecretName(),
 							},
 						}},
 						SecurityContext: &corev1.SecurityContext{
@@ -526,8 +522,8 @@ func (r *RepositoryReconciler) apiFor(
 	if ref == nil {
 		namespace = r.DefaultTokenSecret.Namespace
 		selector = &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{Name: r.DefaultTokenSecret.Name},
-			Key:                  r.DefaultTokenKey,
+			Name: r.DefaultTokenSecret.Name,
+			Key:  r.DefaultTokenKey,
 		}
 	}
 
