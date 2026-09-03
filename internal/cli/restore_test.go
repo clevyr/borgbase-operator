@@ -294,3 +294,30 @@ func TestUntarRefusesPathTraversal(t *testing.T) {
 		t.Fatal("a tar entry escaped the target directory")
 	}
 }
+
+// A backup that takes files as well as a database writes two snapshots, and the
+// files one is newer. Restoring the database from an unqualified "latest" then
+// reads a snapshot with no dump in it.
+func TestDatabaseRestoreTargetsTheDatabaseSnapshot(t *testing.T) {
+	sb := newBackup(testBackupName, testRepoName)
+	sb.Spec.Sources = []borgbasev1.BackupSource{
+		{Type: borgbasev1.SourceTypeCNPG},
+		{Type: borgbasev1.SourceTypeFiles},
+	}
+	if got := databaseSourceTag(sb); got != "db" {
+		t.Errorf("databaseSourceTag = %q, want %q", got, "db")
+	}
+
+	// A source with its own tag is respected.
+	sb.Spec.Sources[0].Tag = testDBTag
+	if got := databaseSourceTag(sb); got != testDBTag {
+		t.Errorf("databaseSourceTag = %q, want %q", got, testDBTag)
+	}
+
+	// A files-only backup has no database snapshot to name.
+	filesOnly := newBackup(testBackupName, testRepoName)
+	filesOnly.Spec.Sources = []borgbasev1.BackupSource{{Type: borgbasev1.SourceTypeFiles}}
+	if got := databaseSourceTag(filesOnly); got != "" {
+		t.Errorf("databaseSourceTag = %q, want empty", got)
+	}
+}

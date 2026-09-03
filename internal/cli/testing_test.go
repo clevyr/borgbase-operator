@@ -23,6 +23,7 @@ const (
 	statusTrue     = "True"
 	testClaimName  = "app-data"
 	testManualJob  = "web-files-manual-abc"
+	testDBTag      = "db-reporting"
 	subjectRepo    = "repository/" + testRepoName
 	subjectBackup  = "scheduledbackup/" + testBackupName
 )

@@ -334,10 +334,19 @@ func restoreToDatabase(
 	// The dump is stored in the snapshot under the host name, which the backup
 	// sets to the namespace, with an extension fixed by the engine.
 	dumpFile := sb.Namespace + dumpExtension(db.Engine)
+
+	// The dump lives in the snapshot its own source wrote. A backup that also
+	// takes files writes a second, newer snapshot, so an unqualified "latest"
+	// resolves to that one, which holds no dump.
+	dump := "dump"
+	if tag := databaseSourceTag(sb); tag != "" {
+		dump += " --tag=" + shellQuote(tag)
+	}
+
 	// The same --secret-mount the backup passes to dumpdb, so restore reads the
 	// credentials from where the operator actually mounted them.
-	pipeline := fmt.Sprintf("restic dump %s %s | restoredb %s --secret-mount=%s",
-		shellQuote(o.snapshot), shellQuote(dumpFile), string(db.Engine),
+	pipeline := fmt.Sprintf("restic %s %s %s | restoredb %s --secret-mount=%s",
+		dump, shellQuote(o.snapshot), shellQuote(dumpFile), string(db.Engine),
 		borgbasev1.DBSecretMountPath)
 	if o.dryRun {
 		pipeline += " --dry-run"
@@ -373,4 +382,16 @@ func dumpExtension(engine borgbasev1.DatabaseEngine) string {
 	default:
 		return ".sql"
 	}
+}
+
+// databaseSourceTag returns the tag the database dump is written under, so a
+// restore reads the snapshot that actually holds it.
+func databaseSourceTag(sb *borgbasev1.ScheduledBackup) string {
+	for i := range sb.Spec.Sources {
+		switch sb.Spec.Sources[i].Type {
+		case borgbasev1.SourceTypeCNPG, borgbasev1.SourceTypeMariaDB:
+			return sb.Spec.Sources[i].EffectiveTag()
+		}
+	}
+	return ""
 }

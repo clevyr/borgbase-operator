@@ -17,13 +17,13 @@ func TestSourceTags(t *testing.T) {
 		{Type: borgbasev1.SourceTypeCNPG},
 		{Type: borgbasev1.SourceTypeFiles},
 		// A second database under its own tag.
-		{Type: borgbasev1.SourceTypeCNPG, Tag: "db-reporting"},
+		{Type: borgbasev1.SourceTypeCNPG, Tag: testDBTag},
 		// A duplicate must not produce a duplicate filter.
 		{Type: borgbasev1.SourceTypeFiles},
 	}
 
 	got := sourceTags(sb)
-	want := []string{"db", "files", "db-reporting"}
+	want := []string{"db", "files", testDBTag}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("sourceTags = %v, want %v", got, want)
 	}
