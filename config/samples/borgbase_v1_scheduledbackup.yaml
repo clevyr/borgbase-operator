@@ -1,9 +1,80 @@
+# A CloudNativePG database plus application files.
+#
+# This replaces roughly ninety lines of hand-written HelmRelease. The schedule,
+# retention, affinity, cache volume and runitor wrapping are all derived.
 apiVersion: borgbase.clevyr.com/v1
 kind: ScheduledBackup
 metadata:
-  labels:
-    app.kubernetes.io/name: borgbase-operator
-    app.kubernetes.io/managed-by: kustomize
-  name: scheduledbackup-sample
+  name: restic
+  namespace: myapp-prod
 spec:
-  # TODO(user): Add fields here
+  repositoryRef:
+    name: restic
+  # A bare cadence is jittered from a hash of this resource, so copy-pasted
+  # backups across namespaces do not all fire on the same minute. Use an
+  # explicit cron expression to pin an existing schedule during migration.
+  schedule: "@hourly"
+  sources:
+    - type: cnpg
+      tag: db
+    - type: files
+      tag: files
+      path: app
+      exclude:
+        - "**/temp*"
+        - app/export-logs
+  retention:
+    hourly: 168
+    daily: 90
+    monthly: 24
+    yearly: 10
+  database:
+    engine: cnpg
+    secretName: postgresql-app
+  volume:
+    existingClaim: myapp-prod-storage
+  cache:
+    storageClass: nfs-regional-ssd
+  healthchecks:
+    # Ping keys are per healthchecks project, and projects are per client, so
+    # this is required rather than defaulted cluster-wide.
+    pingKeySecretRef:
+      name: healthchecks-ping-key
+      key: PING_KEY
+---
+# A MariaDB application, on a pinned schedule and the daily retention tier.
+apiVersion: borgbase.clevyr.com/v1
+kind: ScheduledBackup
+metadata:
+  name: restic
+  namespace: otherapp-prod
+spec:
+  repositoryRef:
+    name: restic
+  schedule: "20 0 * * *"
+  concurrencyPolicy: Replace
+  sources:
+    - type: mariadb
+      tag: db
+      extraArgs: ["--skip-ssl"]
+    - type: files
+      tag: files
+      exclude: [dumps]
+  retention:
+    daily: 90
+    monthly: 24
+    yearly: 10
+  database:
+    engine: mariadb
+    secretName: mariadb
+    host: mariadb
+    name: appdb
+    user: appdb
+  volume:
+    existingClaim: otherapp-prod-data
+  cache:
+    storageClass: nfs-regional-ssd
+  healthchecks:
+    pingKeySecretRef:
+      name: healthchecks-ping-key
+      key: PING_KEY

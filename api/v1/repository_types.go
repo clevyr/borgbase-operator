@@ -62,7 +62,7 @@ type RepositorySpec struct {
 	APITokenSecretRef *corev1.SecretKeySelector `json:"apiTokenSecretRef,omitempty"`
 
 	// existingRepositoryID adopts an already-existing BorgBase repository by
-	// its opaque ID (for example "rwgkggy9"). When set, the operator only ever
+	// its opaque ID (for example "a1b2c3d4"). When set, the operator only ever
 	// looks the repository up; it will never create one, and it will never
 	// generate a password. This is the migration path.
 	//
@@ -107,8 +107,8 @@ type RepositorySpec struct {
 	AlertDays *int32 `json:"alertDays,omitempty"`
 
 	// appendOnly prevents clients from deleting existing data, which protects
-	// backups from a compromised host. Note that restic prune cannot run
-	// against an append-only repository.
+	// backups from a compromised host. `restic forget --prune` cannot run against
+	// an append-only repository.
 	// +optional
 	AppendOnly bool `json:"appendOnly,omitempty"`
 
