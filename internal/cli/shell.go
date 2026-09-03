@@ -81,13 +81,16 @@ func openShell(
 	stdin, ok := f.Streams.In.(*os.File)
 	interactive := ok && kube.IsTerminal(stdin.Fd())
 
-	p := newPrinter(f.Streams.ErrOut)
-	p.printf("starting a pod for scheduledbackup/%s\n", sb.Name)
-	if err := p.Err(); err != nil {
-		return err
-	}
-
 	return run.Attach(ctx, sb, opts, defaultResticTimeout, func(pod *corev1.Pod) error {
+		// Announced only once there is actually a pod. Saying so before the
+		// Job is built claims something that has not happened yet, and reads
+		// as a contradiction when the build then fails.
+		p := newPrinter(f.Streams.ErrOut)
+		p.printf("connected to pod/%s\n", pod.Name)
+		if err := p.Err(); err != nil {
+			return err
+		}
+
 		exec := func() error {
 			return kube.Exec(ctx, run.RESTConfig, run.Clientset, kube.ExecOptions{
 				Namespace: pod.Namespace,
