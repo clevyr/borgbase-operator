@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	fakeclientset "k8s.io/client-go/kubernetes/fake"
+	"k8s.io/utils/ptr"
 )
 
 func jobOwnedBy(name string, ownerUID types.UID, ownerKind string, startedAgo time.Duration) *batchv1.Job {
@@ -23,7 +24,7 @@ func jobOwnedBy(name string, ownerUID types.UID, ownerKind string, startedAgo ti
 		Status:            batchv1.JobStatus{StartTime: &start},
 	}
 	job.OwnerReferences = []metav1.OwnerReference{{
-		Kind: ownerKind, Name: "owner", UID: ownerUID, Controller: ptr(true),
+		Kind: ownerKind, Name: "owner", UID: ownerUID, Controller: ptr.To(true),
 	}}
 	return job
 }

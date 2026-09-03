@@ -11,6 +11,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	borgbasev1 "github.com/clevyr/borgbase-operator/api/v1"
@@ -38,7 +39,7 @@ func ownedCronJob(sb *borgbasev1.ScheduledBackup) *batchv1.CronJob {
 		Kind:       "ScheduledBackup",
 		Name:       sb.Name,
 		UID:        sb.UID,
-		Controller: ptr(true),
+		Controller: ptr.To(true),
 	}}
 	return cj
 }
@@ -49,8 +50,6 @@ func boundCache(sb *borgbasev1.ScheduledBackup) *corev1.PersistentVolumeClaim {
 		Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound},
 	}
 }
-
-func ptr[T any](v T) *T { return &v }
 
 // healthy builds a fully working backup plus everything it depends on.
 func healthy(t *testing.T) (client.Client, *borgbasev1.ScheduledBackup) {
@@ -106,7 +105,7 @@ func TestDoctorDetectsCronJobAdoptionConflict(t *testing.T) {
 		Kind:       "HelmRelease",
 		Name:       testBackupName,
 		UID:        "uid-helmrelease",
-		Controller: ptr(true),
+		Controller: ptr.To(true),
 	}}
 	c := newClient(t, r, sb, credentialsSecret(r.SecretName()), cj, boundCache(sb))
 
@@ -227,7 +226,7 @@ func TestDoctorReportsFailedInitJob(t *testing.T) {
 	}
 	job.OwnerReferences = []metav1.OwnerReference{{
 		APIVersion: borgbasev1.SchemeGroupVersion.String(), Kind: "Repository",
-		Name: r.Name, UID: r.UID, Controller: ptr(true),
+		Name: r.Name, UID: r.UID, Controller: ptr.To(true),
 	}}
 	c := newClient(t, r, job, credentialsSecret(r.SecretName()))
 
