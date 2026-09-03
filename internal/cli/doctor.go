@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 	batchv1 "k8s.io/api/batch/v1"
@@ -348,6 +349,13 @@ func checkLastRun(sb *borgbasev1.ScheduledBackup, r *report) {
 		return
 	}
 
+	// History records manual runs too, which never set lastScheduleTime; without
+	// it a backup that has run several times reads as one that never has.
+	if len(st.History) > 0 {
+		checkRecordedRuns(st.History, r, sb.Name)
+		return
+	}
+
 	switch {
 	case st.LastScheduleTime == nil:
 		// A backup that has never fired is not a missed one. After a migration
@@ -420,4 +428,23 @@ func describeInitJobs(ctx context.Context, c client.Client, repo *borgbasev1.Rep
 	}
 
 	r.add(levelInfo, "no init Job exists yet")
+}
+
+// checkRecordedRuns reports the most recent run from status.history.
+func checkRecordedRuns(history []borgbasev1.BackupRun, r *report, name string) {
+	last := history[0]
+	when := Since(last.CompletionTime)
+	if last.CompletionTime == nil {
+		when = Since(last.StartTime)
+	}
+
+	switch last.Result {
+	case borgbasev1.BackupRunSucceeded:
+		r.add(levelOK, fmt.Sprintf("last backup succeeded %s (%s)", when, strings.ToLower(string(last.Trigger))))
+	case borgbasev1.BackupRunRunning:
+		r.add(levelInfo, fmt.Sprintf("a backup started %s is still running", Since(last.StartTime)))
+	default:
+		r.add(levelFail, fmt.Sprintf("the most recent run (%s) failed", when),
+			"Run: corg logs "+name)
+	}
 }

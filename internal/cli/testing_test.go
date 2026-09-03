@@ -22,6 +22,7 @@ const (
 	reasonReady    = "Ready"
 	statusTrue     = "True"
 	testClaimName  = "app-data"
+	testManualJob  = "web-files-manual-abc"
 	subjectRepo    = "repository/" + testRepoName
 	subjectBackup  = "scheduledbackup/" + testBackupName
 )

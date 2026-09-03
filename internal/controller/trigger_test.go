@@ -173,3 +173,45 @@ func TestTriggerIgnoresMalformedTimestamp(t *testing.T) {
 		t.Error("a bad annotation must not wedge the reconcile")
 	}
 }
+
+// Creating the Job enqueues a second reconcile that can read a ScheduledBackup
+// whose status write has not reached the cache yet. Without recognising the
+// Job's own name, that pass records a backup that is running as one that was
+// never started -- which is what `corg backup --wait` then reports.
+func TestTriggerIsNotSkippedByItsOwnJob(t *testing.T) {
+	sb := triggeredBackup(triggerAt, func(sb *borgbasev1.ScheduledBackup) {
+		sb.Spec.ConcurrencyPolicy = batchv1.ForbidConcurrent
+	})
+	r, c := backupHarness(t, initializedRepo(), sb)
+
+	reconcileBackup(t, r)
+
+	jobs := manualJobs(t, c)
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 manual Job, got %d", len(jobs))
+	}
+
+	// Simulate the stale read: the Job exists and is running, but the status
+	// write recording the trigger has not landed.
+	jobs[0].Status.Active = 1
+	if err := c.Status().Update(context.Background(), &jobs[0]); err != nil {
+		t.Fatal(err)
+	}
+	stale := loadBackup(t, c)
+	stale.Status.LastTriggerTime = nil
+	stale.Status.LastTriggerJob = ""
+	if err := c.Status().Update(context.Background(), stale); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcileBackup(t, r)
+
+	got := loadBackup(t, c)
+	if got.Status.LastTriggerJob != jobs[0].Name {
+		t.Errorf("lastTriggerJob = %q, want %q: the run was recorded as skipped",
+			got.Status.LastTriggerJob, jobs[0].Name)
+	}
+	if n := len(manualJobs(t, c)); n != 1 {
+		t.Errorf("expected no second Job, got %d", n)
+	}
+}

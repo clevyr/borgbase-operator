@@ -52,10 +52,17 @@ func (r *ScheduledBackupReconciler) reconcileTrigger(
 		return nil
 	}
 
+	wanted := backup.ManualJobName(sb, at)
+
 	if sb.Spec.ConcurrencyPolicy == batchv1.ForbidConcurrent {
-		if active := activeRun(runs); active != "" {
+		// Creating the Job enqueues another reconcile, which can read a
+		// ScheduledBackup whose status write has not reached the cache yet: the
+		// trigger looks unhandled and its own new Job looks like an unrelated
+		// run in progress. Recognising the name means a backup that is running
+		// is never recorded as one that never started.
+		if active := activeRun(runs); active != "" && active != wanted {
 			r.Recorder.Eventf(sb, nil, corev1.EventTypeWarning, "TriggerSkipped", "Trigger",
-				"Not starting a backup: %s is still running and concurrencyPolicy is Forbid", active)
+				"Not starting a backup: Job %s is still running and concurrencyPolicy is Forbid", active)
 			// Record the trigger anyway, so it is not retried on every pass.
 			sb.Status.LastTriggerTime = &metav1.Time{Time: at}
 			sb.Status.LastTriggerJob = ""
@@ -93,10 +100,11 @@ type observedRun struct {
 	active bool
 }
 
+// activeRun returns the name of a run still in flight, or "".
 func activeRun(runs []observedRun) string {
 	for _, o := range runs {
 		if o.active {
-			return "Job " + o.run.JobName
+			return o.run.JobName
 		}
 	}
 	return ""

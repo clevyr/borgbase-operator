@@ -268,3 +268,52 @@ func TestDoctorEmptyNamespace(t *testing.T) {
 		t.Errorf("unexpected output: %q", out)
 	}
 }
+
+// A manual run never sets lastScheduleTime, so a backup triggered by hand used
+// to report as one that had never run at all.
+func TestDoctorReadsHistoryForManualRuns(t *testing.T) {
+	r := readyRepo(testNS)
+	sb := readyBackup(testBackupName, testRepoName)
+	sb.Status.LastScheduleTime = nil
+	sb.Status.LastSuccessfulTime = nil
+	done := metav1.NewTime(time.Now().Add(-5 * time.Minute))
+	started := metav1.NewTime(done.Add(-30 * time.Second))
+	sb.Status.History = []borgbasev1.BackupRun{{
+		JobName: testManualJob, Trigger: borgbasev1.BackupTriggerManual,
+		Result: borgbasev1.BackupRunSucceeded, StartTime: &started, CompletionTime: &done,
+	}}
+	c := newClient(t, r, sb, credentialsSecret(r.SecretName()), ownedCronJob(sb), boundCache(sb))
+
+	out, err := doctor(t, c, "sb/"+testBackupName)
+	if err != nil {
+		t.Fatalf("a backup with a successful manual run should be healthy: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "last backup succeeded") || !strings.Contains(out, "manual") {
+		t.Errorf("expected the manual run to be reported:\n%s", out)
+	}
+	if strings.Contains(out, "no backup has run yet") {
+		t.Errorf("a backup that has run must not read as one that has not:\n%s", out)
+	}
+}
+
+// A failed run recorded in history must fail doctor.
+func TestDoctorReportsAFailedRunFromHistory(t *testing.T) {
+	r := readyRepo(testNS)
+	sb := readyBackup(testBackupName, testRepoName)
+	sb.Status.LastScheduleTime = nil
+	sb.Status.LastSuccessfulTime = nil
+	done := metav1.NewTime(time.Now().Add(-time.Minute))
+	sb.Status.History = []borgbasev1.BackupRun{{
+		JobName: testManualJob, Trigger: borgbasev1.BackupTriggerManual,
+		Result: borgbasev1.BackupRunFailed, CompletionTime: &done,
+	}}
+	c := newClient(t, r, sb, credentialsSecret(r.SecretName()), ownedCronJob(sb), boundCache(sb))
+
+	out, err := doctor(t, c, "sb/"+testBackupName)
+	if !errors.Is(err, ErrUnhealthy) {
+		t.Fatalf("expected ErrUnhealthy, got %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "failed") {
+		t.Errorf("expected the failure to be reported:\n%s", out)
+	}
+}

@@ -98,9 +98,9 @@ func TestBackupWaitsForAnAcknowledgedRun(t *testing.T) {
 	sb := readyBackup(testBackupName, testRepoName)
 	acked := metav1.NewTime(time.Now().Add(time.Hour))
 	sb.Status.LastTriggerTime = &acked
-	sb.Status.LastTriggerJob = "web-files-manual-abc"
+	sb.Status.LastTriggerJob = testManualJob
 
-	done := jobOwnedBy("web-files-manual-abc", sb.UID, "ScheduledBackup", time.Minute)
+	done := jobOwnedBy(testManualJob, sb.UID, "ScheduledBackup", time.Minute)
 	done.Status.Succeeded = 1
 	c := newClient(t, sb, done)
 
@@ -120,9 +120,9 @@ func TestBackupFailsOnAFailedRun(t *testing.T) {
 	sb := readyBackup(testBackupName, testRepoName)
 	acked := metav1.NewTime(time.Now().Add(time.Hour))
 	sb.Status.LastTriggerTime = &acked
-	sb.Status.LastTriggerJob = "web-files-manual-abc"
+	sb.Status.LastTriggerJob = testManualJob
 
-	failed := jobOwnedBy("web-files-manual-abc", sb.UID, "ScheduledBackup", time.Minute)
+	failed := jobOwnedBy(testManualJob, sb.UID, "ScheduledBackup", time.Minute)
 	failed.Status.Failed = 1
 	c := newClient(t, sb, failed)
 
