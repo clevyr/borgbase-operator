@@ -20,7 +20,7 @@ func TestDisplayName(t *testing.T) {
 		{"/usr/local/bin/corg", binaryName},
 		{"./bin/corg", binaryName},
 		{"kubectl-corg", pluginDisplay},
-		{"/home/u/.krew/bin/kubectl-corg", pluginDisplay},
+		{"/opt/homebrew/bin/kubectl-corg", pluginDisplay},
 		{"kubectl-corg.exe", pluginDisplay},
 		// kubectl accepts an underscore where a plugin name needs a dash.
 		{"kubectl-corg_thing", "kubectl corg-thing"},
