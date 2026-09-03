@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -655,5 +656,38 @@ func TestOwnerReferenceFollowsDeletionPolicy(t *testing.T) {
 
 	if got := metav1.GetControllerOf(getSecret(t, c, "restic-borgbase")); got != nil {
 		t.Errorf("Retain should have released the Secret, still owned by %s", got.Name)
+	}
+}
+
+// A BorgBase outage must not be mistaken for a repository that has gone away:
+// a lookup failure has to surface as an error, leaving the recorded ID and the
+// credentials Secret untouched for the next pass.
+func TestLookupFailureLeavesStateIntact(t *testing.T) {
+	api := newFakeAPI()
+	r, c := newHarness(t, api, repositoryFixture(nil))
+	reconcileN(t, r, 2)
+
+	before := string(getSecret(t, c, "restic-borgbase").Data[KeyResticPassword])
+	var repo borgbasev1.Repository
+	key := types.NamespacedName{Namespace: testNS, Name: resticName}
+	if err := c.Get(context.Background(), key, &repo); err != nil {
+		t.Fatal(err)
+	}
+	id := repo.Status.RepositoryID
+
+	api.getErr = errors.New("borgbase: gateway timeout")
+	if _, err := r.Reconcile(context.Background(),
+		ctrl.Request{Namespace: testNS, Name: resticName}); err == nil {
+		t.Fatal("expected the API failure to surface")
+	}
+
+	if err := c.Get(context.Background(), key, &repo); err != nil {
+		t.Fatal(err)
+	}
+	if repo.Status.RepositoryID != id {
+		t.Errorf("recorded repository ID changed to %q during an outage", repo.Status.RepositoryID)
+	}
+	if after := string(getSecret(t, c, "restic-borgbase").Data[KeyResticPassword]); after != before {
+		t.Error("the password was rewritten during an API outage")
 	}
 }
