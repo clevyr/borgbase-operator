@@ -26,7 +26,13 @@ func newClient(t *testing.T, objs ...client.Object) client.Client {
 			t.Fatal(err)
 		}
 	}
-	return fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()
+	return fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(objs...).
+		WithStatusSubresource(
+			&borgbasev1.ScheduledBackup{}, &borgbasev1.Repository{}, &batchv1.Job{},
+		).
+		Build()
 }
 
 func newRepo(ns string) *borgbasev1.Repository {

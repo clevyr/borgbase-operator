@@ -72,6 +72,9 @@ restores snapshots, and drops you into a shell with restic already configured.`,
 	f.ConfigFlags.AddFlags(cmd.PersistentFlags())
 
 	subcommands := []*cobra.Command{
+		newBackupCommand(f),
+		newCancelCommand(f),
+		newWaitCommand(f),
 		newDoctorCommand(f),
 		newGetCommand(f),
 		newLogsCommand(f),
