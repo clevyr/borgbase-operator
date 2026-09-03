@@ -25,7 +25,6 @@ archives:
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
     formats: [tar.gz]
     files:
-      - LICENSE*
       - README.md
 
 checksum:
@@ -35,32 +34,25 @@ snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
 changelog:
-  use: github
-  filters:
-    exclude:
-      - "^docs:"
-      - "^test:"
-      - "^chore\\(deps\\):"
+  disable: true
 
-brews:
+homebrew_casks:
   - name: corg
     ids: [corg]
     repository:
       owner: clevyr
       name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: https://github.com/clevyr/borgbase-operator
     description: Companion CLI for the Clevyr borgbase operator
-    license: MIT
-    install: |
-      bin.install "corg"
-      # The same binary serves as a kubectl plugin; kubectl finds it on PATH
-      # by this name and presents it as `kubectl corg`.
-      bin.install_symlink bin/"corg" => "kubectl-corg"
-    test: |
-      system "#{bin}/corg", "version"
+    binaries: [corg]
+    custom_block: |
+      binary "corg", target: "kubectl-corg"
+    hooks:
+      post:
+        install: |
+          if OS.mac? && system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/corg"]
+          end
 
 release:
-  # The operator and the CLI are versioned together out of one repository, so
-  # a CLI release rides the same tag.
   prerelease: auto
