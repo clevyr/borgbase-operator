@@ -55,7 +55,7 @@ func TestGetSendsBearerTokenAndParsesRepo(t *testing.T) {
 		"id":"a1b2c3d4","name":"myapp-prod","region":"us","format":"restic",
 		"repoPath":"a1b2c3d4@a1b2c3d4.repo.borgbase.com:repo",
 		"quota":100,"quotaEnabled":true,"alertDays":3,"appendOnly":false,
-		"currentUsage":3.25,"vgerToken":"vger-secret","htpasswd":null,
+		"currentUsage":3.25,"vgerToken":"vger-secret",
 		"server":{"hostname":"box-us00.borgbase.com","region":"us"}}}}`}
 	c, done := s.server(t)
 	defer done()
@@ -202,12 +202,12 @@ func TestResticURLRejectsUnusableRepos(t *testing.T) {
 	}
 }
 
-func TestPasswordPrefersVgerTokenThenHtpasswd(t *testing.T) {
-	if got := (&Repo{VgerToken: "v", Htpasswd: "h"}).Password(); got != "v" {
+func TestPasswordIsTheVgerToken(t *testing.T) {
+	if got := (&Repo{VgerToken: "v"}).Password(); got != "v" {
 		t.Errorf("Password() = %q, want the vger token", got)
 	}
-	if got := (&Repo{Htpasswd: "h"}).Password(); got != "h" {
-		t.Errorf("Password() = %q, want the htpasswd fallback", got)
+	if _, err := (&Repo{ID: "x", Format: FormatRestic}).ResticURL(); !errors.Is(err, ErrNoCredentials) {
+		t.Error("a repository with no vgerToken must not yield a URL")
 	}
 }
 

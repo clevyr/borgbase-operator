@@ -60,7 +60,6 @@ const repoFields = `
 	appendOnly
 	currentUsage
 	vgerToken
-	htpasswd
 	server { hostname region }
 `
 
