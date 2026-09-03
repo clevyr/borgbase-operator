@@ -3,7 +3,9 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -19,15 +21,32 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	"k8s.io/apimachinery/pkg/types"
+
 	borgbasev1 "github.com/clevyr/borgbase-operator/api/v1"
+	"github.com/clevyr/borgbase-operator/internal/backup"
 	"github.com/clevyr/borgbase-operator/internal/controller"
+	"github.com/clevyr/borgbase-operator/internal/healthchecks"
 	// +kubebuilder:scaffold:imports
 )
+
+// defaultBackupImage is the Clevyr restic image, which bundles restic,
+// runitor, ts and the dumpdb helper the generated scripts rely on.
+const defaultBackupImage = "ghcr.io/clevyr/restic:0.18.1"
 
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
 )
+
+// parseNamespacedName parses a "namespace/name" flag value.
+func parseNamespacedName(s string) (types.NamespacedName, error) {
+	ns, name, ok := strings.Cut(s, "/")
+	if !ok || ns == "" || name == "" {
+		return types.NamespacedName{}, fmt.Errorf("expected namespace/name, got %q", s)
+	}
+	return types.NamespacedName{Namespace: ns, Name: name}, nil
+}
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -46,6 +65,11 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+
+	// Operator-level configuration.
+	var apiTokenSecret, apiTokenKey, backupImage, cacheStorageClass, borgbaseEndpoint string
+	var healthchecksEnabled, healthchecksAutoCreate bool
+	var healthchecksAPIURL string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -66,6 +90,26 @@ func main() {
 	opts := zap.Options{
 		Development: true,
 	}
+	flag.StringVar(&apiTokenSecret, "api-token-secret", "borgbase-system/borgbase-api",
+		"Namespaced name of the Secret holding the default BorgBase API token. "+
+			"A Repository may override this with spec.apiTokenSecretRef.")
+	flag.StringVar(&borgbaseEndpoint, "borgbase-endpoint", "",
+		"Override the BorgBase GraphQL endpoint. Empty uses the public API.")
+	flag.StringVar(&apiTokenKey, "api-token-key", "token",
+		"Key within the default BorgBase API token Secret.")
+	flag.StringVar(&backupImage, "backup-image", defaultBackupImage,
+		"Image used for backup and init jobs. It must provide restic, runitor, ts and dumpdb.")
+	flag.StringVar(&cacheStorageClass, "cache-storage-class", "",
+		"StorageClass for restic cache volumes. Must support ReadWriteMany when backups overlap.")
+	flag.BoolVar(&healthchecksEnabled, "healthchecks-enabled", true,
+		"Report backup runs to healthchecks via runitor. Each ScheduledBackup still supplies its "+
+			"own project ping key; there is deliberately no cluster-wide key.")
+	flag.StringVar(&healthchecksAPIURL, "healthchecks-api-url", "http://healthchecks.healthchecks:8000/ping",
+		"Healthchecks ping endpoint.")
+	flag.BoolVar(&healthchecksAutoCreate, "healthchecks-auto-create", true,
+		"Auto-provision a check on its first ping. Auto-created checks get the healthchecks "+
+			"defaults of a one day period and one hour grace.")
+
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
@@ -121,14 +165,10 @@ func main() {
 		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
 	}
 
-	// If the certificate is not specified, controller-runtime will automatically
-	// generate self-signed certificates for the metrics server. While convenient for development and testing,
-	// this setup is not recommended for production.
-	//
-	// TODO(user): If you enable certManager, uncomment the following lines:
-	// - [METRICS-WITH-CERTS] at config/default/kustomization.yaml to generate and use certificates
-	// managed by cert-manager for the metrics server.
-	// - [PROMETHEUS-WITH-CERTS] at config/prometheus/kustomization.yaml for TLS certification.
+	// Without an explicit certificate, controller-runtime self-signs one for the
+	// metrics server. That is fine here because metrics are not exposed outside
+	// the cluster; serving them publicly would want a real certificate, via the
+	// METRICS-WITH-CERTS and PROMETHEUS-WITH-CERTS sections in config/.
 	if len(metricsCertPath) > 0 {
 		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
 			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName, "metrics-cert-key", metricsCertKey)
@@ -162,9 +202,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	tokenSecret, err := parseNamespacedName(apiTokenSecret)
+	if err != nil {
+		setupLog.Error(err, "Invalid --api-token-secret")
+		os.Exit(1)
+	}
+
 	if err := (&controller.RepositoryReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		DefaultTokenSecret: tokenSecret,
+		DefaultTokenKey:    apiTokenKey,
+		BackupImage:        backupImage,
+		Endpoint:           borgbaseEndpoint,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "repository")
 		os.Exit(1)
@@ -172,6 +222,15 @@ func main() {
 	if err := (&controller.ScheduledBackupReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Config: backup.Config{
+			Image:             backupImage,
+			CacheStorageClass: cacheStorageClass,
+			Healthchecks: healthchecks.Config{
+				Enabled:    healthchecksEnabled,
+				APIURL:     healthchecksAPIURL,
+				AutoCreate: healthchecksAutoCreate,
+			},
+		},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "scheduledbackup")
 		os.Exit(1)
